@@ -20,6 +20,7 @@ import {
   estadisticasDescriptivas,
   calcularCorrelacionesMejoradas,
   resumenAnual,
+  polyreg,
 } from "../utils/epidemiology";
 
 // Datos reales temperatura verano (SENAMHI SCZ) vs casos totales por año
@@ -29,30 +30,6 @@ const TEMP_VERANO_ANUAL = [
   { año: 2024, tempVerano: 32.8, label: "2024" },
   { año: 2025, tempVerano: 31.2, label: "2025" },
 ];
-
-function pearsonSimple(xs, ys) {
-  const n = xs.length;
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  const num = xs.reduce((s, x, i) => s + (x - mx) * (ys[i] - my), 0);
-  const den = Math.sqrt(
-    xs.reduce((s, x) => s + (x - mx) ** 2, 0) *
-      ys.reduce((s, y) => s + (y - my) ** 2, 0),
-  );
-  return den === 0 ? 0 : num / den;
-}
-
-function linregSimple(xs, ys) {
-  const n = xs.length;
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  const slope =
-    xs.reduce((s, x, i) => s + (x - mx) * (ys[i] - my), 0) /
-    xs.reduce((s, x) => s + (x - mx) ** 2, 0);
-  const intercept = my - slope * mx;
-  const r = pearsonSimple(xs, ys);
-  return { slope, intercept, r2: r ** 2 };
-}
 
 function StatKpi({ label, value, sub, color }) {
   return (
@@ -187,23 +164,23 @@ export default function DashboardView({ disease, datos }) {
     });
   }, [datos]);
 
-  // Regresión lineal sobre los 5 puntos anuales
+  // Regresión polinómica grado 2 sobre los 4 puntos anuales
   const regAnual = useMemo(() => {
     const xs = scatterAnual.map((d) => d.tempVerano);
     const ys = scatterAnual.map((d) => d.totalCasos);
-    return linregSimple(xs, ys);
+    return polyreg(xs, ys, 2);
   }, [scatterAnual]);
 
-  // Curva ajustada lineal para el scatter anual
+  // Curva ajustada polinómica para el scatter anual
   const lineaAjustada = useMemo(() => {
     const temps = scatterAnual.map((d) => d.tempVerano);
     const mn = Math.min(...temps) - 0.2;
     const mx = Math.max(...temps) + 0.2;
-    return Array.from({ length: 20 }, (_, i) => {
-      const t = mn + (i / 19) * (mx - mn);
+    return Array.from({ length: 30 }, (_, i) => {
+      const t = mn + (i / 29) * (mx - mn);
       return {
         tempVerano: +t.toFixed(2),
-        fitted: Math.max(0, regAnual.intercept + regAnual.slope * t),
+        fitted: Math.max(0, regAnual.predict(t)),
       };
     });
   }, [scatterAnual, regAnual]);
@@ -567,7 +544,7 @@ export default function DashboardView({ disease, datos }) {
         >
           {/* ── Regresión: condicional según filtro ── */}
           {yearFilter === "todos" ? (
-            <Card title="Temp. Verano vs Casos Anuales (SENAMHI)">
+            <Card title="Reg. Polinómica: Temp. Verano vs Casos Anuales (grado 2)">
               <ResponsiveContainer width="100%" height={180}>
                 <ScatterChart
                   margin={{ top: 4, right: 8, bottom: 4, left: -10 }}
@@ -612,7 +589,7 @@ export default function DashboardView({ disease, datos }) {
                     line={{ stroke: "#f59e0b", strokeWidth: 2 }}
                     shape={() => null}
                     legendType="line"
-                    name="Regresión lineal"
+                    name="Regresión polinómica"
                     fill="none"
                   />
                   <Scatter
@@ -665,8 +642,9 @@ export default function DashboardView({ disease, datos }) {
                   marginTop: 2,
                 }}
               >
-                Y = {regAnual.intercept.toFixed(0)} +{" "}
-                {regAnual.slope.toFixed(0)}·T
+                Y = {regAnual.coefs[0].toFixed(0)} +{" "}
+                {regAnual.coefs[1].toFixed(0)}·T +{" "}
+                {regAnual.coefs[2].toFixed(0)}·T²
               </div>
             </Card>
           ) : (
