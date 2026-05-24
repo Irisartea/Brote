@@ -1,1685 +1,411 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { calcularIntensidades } from "../utils/epidemiology";
-import { ZONAS_SCZ } from "../data/desidadPoblacional";
-import {
-  MapContainer,
-  TileLayer,
-  Circle,
-  Marker,
-  Tooltip,
-  useMapEvents,
-} from "react-leaflet";
-import L from "leaflet";
-import HeatmapLayer from "./map/HeatmapLayer";
-import {
-  DISEASE_THEME,
-  SCZ_CENTER,
-  SCZ_ZOOM,
-  SCZ_LANDMARKS,
-  SCZ_ANILLOS,
-  MATH_FORMULAS,
-  getGtLevel,
-} from "../utils/constants";
-import {
-  computeR,
-  gradMagnitude,
-  gradDirection,
-  angleToCardinal,
-  sigmaDengue,
-  fTemp_dengue,
-  fHumedad_dengue,
-  fLluvia_dengue,
-  fVacuna_dengue,
-  fAgua,
-  fFumigacion,
-} from "../utils/mathEngine";
-import AgregarRegistroModal from "./AgregarRegistroModal";
+import { useEffect, useRef, useCallback } from "react";
+import { useMap } from "react-leaflet";
+import { hessian, classifyCritical } from "../../utils/mathEngine";
+import { DISEASE_THEME } from "../../utils/constants";
 
-const TILE_URL =
-  "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
-const TILE_ATTR = '&copy; <a href="https://carto.com/">CARTO</a>';
+const RES = 3;
+const CUTOFF = 2.8;
 
-const N = {
-  bg: "#f0f2f7",
-  surface: "#ffffff",
-  surface2: "#f7f9fc",
-  border: "#e2e6ef",
-  text: "#0d1117",
-  mid: "#3d4554",
-  muted: "#6e7891",
-  faint: "#adb5c8",
-  teal: "#0d9488",
-  blue: "#1d4ed8",
-  lila: "#7c3aed",
-  green: "#059669",
-  amber: "#d97706",
-  rose: "#e11d48",
-};
+function calcLoop(focusSet, bbox, W, H, latN, lonW, latRange, lonRange) {
+  const { pxMin, pxMax, pyMin, pyMax } = bbox;
+  const total =
+    Math.ceil((pxMax - pxMin) / RES) * Math.ceil((pyMax - pyMin) / RES);
+  const rArr = new Float32Array(total);
+  const gLatArr = new Float32Array(total);
+  const gLonArr = new Float32Array(total);
+  const pxArr = new Int16Array(total);
+  const pyArr = new Int16Array(total);
 
-const DEFAULT_FACTORES = {
-  temp: 28,
-  humidity: 70,
-  lluvia: 80,
-  breeding: 0.4,
-  intervention: 0.2,
-  vacuna: 0,
-  casos: 20,
-};
+  let rMin = Infinity,
+    rMax = -Infinity;
+  let totalR = 0,
+    totalGrad = 0;
+  let maxPos = { lat: latN, lon: lonW };
+  let idx = 0;
 
-// ── Factor ambiental compuesto ─────────────────────────────────────────────
-// Todos los factores combinados en un solo multiplicador para dengue
-function calcularF(factores) {
-  return (
-    fTemp_dengue(factores.temp) *
-    fHumedad_dengue(factores.humidity) *
-    fLluvia_dengue(factores.lluvia) *
-    fAgua(factores.breeding) *
-    fFumigacion(factores.intervention) *
-    fVacuna_dengue(factores.vacuna)
-  );
-}
-
-function calcularSigma(factores, sigmaBase) {
-  return sigmaDengue(
-    sigmaBase,
-    factores.breeding,
-    factores.lluvia / 200,
-    factores.intervention,
-  );
-}
-
-function sigmaDelDistritoMasCercano(lat, lon) {
-  let minDist = Infinity,
-    sigmaCercano = 0.006;
-  for (const z of ZONAS_SCZ) {
-    const d = (lat - z.lat) ** 2 + (lon - z.lon) ** 2;
-    if (d < minDist) {
-      minDist = d;
-      sigmaCercano = z.sigma;
+  for (let py = pyMin; py < pyMax; py += RES) {
+    for (let px = pxMin; px < pxMax; px += RES) {
+      const lat = latN - (py / H) * latRange;
+      const lon = lonW + (px / W) * lonRange;
+      let r = 0,
+        gLat = 0,
+        gLon = 0;
+      for (const f of focusSet) {
+        const A = f.Ai ?? f.A ?? 0;
+        const s2 = f.sigma * f.sigma;
+        const dl = lat - f.lat;
+        const dn = lon - f.lon;
+        const d2 = dl * dl + dn * dn;
+        if (d2 > CUTOFF * CUTOFF * s2) continue;
+        const G = A * Math.exp(-d2 / (2 * s2));
+        r += G;
+        const inv = 1 / s2;
+        gLat -= G * dl * inv;
+        gLon -= G * dn * inv;
+      }
+      if (r < rMin) rMin = r;
+      if (r > rMax) {
+        rMax = r;
+        maxPos = { lat, lon };
+      }
+      totalR += r;
+      totalGrad += Math.sqrt(gLat * gLat + gLon * gLon);
+      rArr[idx] = r;
+      gLatArr[idx] = gLat;
+      gLonArr[idx] = gLon;
+      pxArr[idx] = px;
+      pyArr[idx] = py;
+      idx++;
     }
   }
-  return Math.min(sigmaCercano, 0.004);
-}
-
-function ClickHandler({ addingFocus, onAdd, foci, theme }) {
-  useMapEvents({
-    click(e) {
-      const { lat, lng: lon } = e.latlng;
-      if (addingFocus) {
-        onAdd(lat, lon);
-        return;
-      }
-      const r = computeR(lat, lon, foci);
-      const mag = gradMagnitude(lat, lon, foci);
-      const theta = gradDirection(lat, lon, foci);
-      L.popup({ closeButton: true, maxWidth: 240 })
-        .setLatLng(e.latlng)
-        .setContent(
-          `
-          <div style="font-family:'DM Sans',sans-serif">
-            <div style="font-size:10px;color:#6e7891;margin-bottom:4px">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
-            <div style="font-size:20px;font-weight:700;color:${theme.primary};font-family:'DM Mono',monospace">
-              Riesgo: ${r.toFixed(4)}
-            </div>
-            <div style="font-size:11px;color:#6e7891;font-family:'DM Mono',monospace;margin-top:6px">
-              Expansión: ${mag.toFixed(5)} · Dir: ${angleToCardinal(theta)}
-            </div>
-          </div>`,
-        )
-        .openOn(e.target);
-    },
-  });
-  return null;
-}
-
-// ── Slider ─────────────────────────────────────────────────────────────────
-function Slider({
-  label,
-  sublabel,
-  value,
-  onChange,
-  color = N.teal,
-  min = 0,
-  max = 1,
-  step = 0.01,
-  unit = "",
-}) {
-  const pct = ((value - min) / (max - min)) * 100;
-  return (
-    <div style={{ marginBottom: 18 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          marginBottom: 7,
-        }}
-      >
-        <div>
-          <span style={{ fontSize: 12, color: N.mid, fontWeight: 500 }}>
-            {label}
-          </span>
-          {sublabel && (
-            <div style={{ fontSize: 10, color: N.faint, marginTop: 1 }}>
-              {sublabel}
-            </div>
-          )}
-        </div>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            fontWeight: 600,
-            color,
-            background: color + "12",
-            padding: "2px 9px",
-            borderRadius: 6,
-            border: `1px solid ${color}28`,
-            whiteSpace: "nowrap",
-          }}
-        >
-          {Number.isInteger(step) || step >= 1
-            ? Math.round(value)
-            : value.toFixed(2)}
-          {unit}
-        </span>
-      </div>
-      <div
-        style={{
-          position: "relative",
-          height: 5,
-          background: N.border,
-          borderRadius: 5,
-        }}
-      >
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            height: "100%",
-            width: `${pct}%`,
-            borderRadius: 5,
-            background: color,
-            transition: "width 0.08s",
-          }}
-        />
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(e) => onChange(+e.target.value)}
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: 0,
-            transform: "translateY(-50%)",
-            width: "100%",
-            opacity: 0,
-            cursor: "pointer",
-            height: 20,
-            margin: 0,
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: `${pct}%`,
-            top: "50%",
-            transform: "translate(-50%,-50%)",
-            width: 15,
-            height: 15,
-            borderRadius: "50%",
-            background: "white",
-            border: `2px solid ${color}`,
-            boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
-            pointerEvents: "none",
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function SectionLabel({ children, icon }) {
-  return (
-    <div
-      style={{
-        fontSize: 10,
-        fontFamily: "var(--font-mono)",
-        color: N.muted,
-        letterSpacing: 1.5,
-        textTransform: "uppercase",
-        fontWeight: 600,
-        marginBottom: 12,
-        marginTop: 6,
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        paddingBottom: 6,
-        borderBottom: `1px solid ${N.border}`,
-      }}
-    >
-      {icon && <span>{icon}</span>}
-      {children}
-    </div>
-  );
-}
-
-function MathCard({ title, formula, explanation }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div
-      style={{
-        marginBottom: 6,
-        borderRadius: 8,
-        border: `1px solid ${N.border}`,
-        overflow: "hidden",
-        background: N.surface,
-      }}
-    >
-      <button
-        onClick={() => setOpen(!open)}
-        style={{
-          width: "100%",
-          padding: "10px 14px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          fontSize: 12,
-          fontWeight: 600,
-          color: N.mid,
-          fontFamily: "var(--font-body)",
-          textAlign: "left",
-        }}
-      >
-        <span>{title}</span>
-        <span
-          style={{
-            fontSize: 10,
-            color: N.faint,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "0.2s",
-            display: "inline-block",
-          }}
-        >
-          ▼
-        </span>
-      </button>
-      {open && (
-        <div style={{ padding: "0 14px 14px" }}>
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              color: N.teal,
-              background: "#f0fdfa",
-              padding: "10px 12px",
-              borderRadius: 6,
-              marginBottom: 8,
-              border: "1px solid #99f6e4",
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {formula}
-          </div>
-          <p
-            style={{ fontSize: 11, color: N.muted, lineHeight: 1.6, margin: 0 }}
-          >
-            {explanation}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StatRow({ label, value, color = N.mid }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        padding: "6px 0",
-        borderBottom: `1px solid ${N.border}`,
-      }}
-    >
-      <span style={{ fontSize: 12, color: N.muted }}>{label}</span>
-      <span
-        style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 12,
-          fontWeight: 600,
-          color,
-        }}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function FactoresPanel({ factores, onChange, theme, showCasos = false }) {
-  return (
-    <>
-      <SectionLabel icon="🌡️">Clima y ambiente</SectionLabel>
-      <Slider
-        label="Temperatura"
-        sublabel="Afecta al mosquito vector"
-        value={factores.temp}
-        min={15}
-        max={40}
-        unit="°C"
-        color={N.amber}
-        onChange={(v) => onChange({ ...factores, temp: v })}
-      />
-      <Slider
-        label="Humedad ambiental"
-        sublabel="Favorece la supervivencia del mosquito"
-        value={factores.humidity}
-        min={30}
-        max={100}
-        unit="%"
-        color={N.blue}
-        onChange={(v) => onChange({ ...factores, humidity: v })}
-      />
-      <Slider
-        label="Lluvia semanal"
-        sublabel="Crea criaderos de mosquitos"
-        value={factores.lluvia}
-        min={0}
-        max={200}
-        unit=" mm"
-        color={N.teal}
-        onChange={(v) => onChange({ ...factores, lluvia: v })}
-      />
-      <Slider
-        label="Agua estancada"
-        sublabel="Lugares donde se reproduce el mosquito"
-        value={factores.breeding}
-        color={N.lila}
-        onChange={(v) => onChange({ ...factores, breeding: v })}
-      />
-      <SectionLabel icon="🏥">Control sanitario</SectionLabel>
-      <Slider
-        label="Fumigación"
-        sublabel="Reduce la cantidad de mosquitos"
-        value={factores.intervention}
-        color={N.green}
-        onChange={(v) => onChange({ ...factores, intervention: v })}
-      />
-      <Slider
-        label="Vacunación"
-        sublabel="Porcentaje de la población vacunada"
-        value={factores.vacuna}
-        color={N.blue}
-        onChange={(v) => onChange({ ...factores, vacuna: v })}
-      />
-      {showCasos && (
-        <>
-          <SectionLabel icon="📍">Casos en esta zona</SectionLabel>
-          <Slider
-            label="Casos reportados"
-            sublabel="Número inicial de contagios"
-            value={factores.casos}
-            min={1}
-            max={500}
-            step={1}
-            color={theme.primary}
-            onChange={(v) => onChange({ ...factores, casos: v })}
-          />
-        </>
-      )}
-    </>
-  );
-}
-
-function WeekSelector({ datos, selectedIdx, onSelectIdx }) {
-  if (!datos?.length) return null;
-  const años = [...new Set(datos.map((r) => r.año))].sort();
-  const añoActual = datos[selectedIdx]?.año;
-  const seActual = datos[selectedIdx]?.se;
-  const semanasDelAño = datos
-    .filter((r) => r.año === añoActual)
-    .map((r) => r.se);
-  const selStyle = {
-    padding: "5px 10px",
-    borderRadius: 7,
-    border: `1px solid ${N.border}`,
-    background: "white",
-    fontFamily: "var(--font-mono)",
-    fontSize: 12,
-    fontWeight: 600,
-    color: N.text,
-    cursor: "pointer",
-    outline: "none",
+  return {
+    rArr,
+    gLatArr,
+    gLonArr,
+    pxArr,
+    pyArr,
+    count: idx,
+    rMin,
+    rMax,
+    totalR,
+    totalGrad,
+    maxPos,
   };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <select
-        value={añoActual}
-        style={selStyle}
-        onChange={(e) => {
-          const idx = datos.findIndex((r) => r.año === +e.target.value);
-          if (idx >= 0) onSelectIdx(idx);
-        }}
-      >
-        {años.map((a) => (
-          <option key={a} value={a}>
-            {a}
-          </option>
-        ))}
-      </select>
-      <select
-        value={seActual}
-        style={selStyle}
-        onChange={(e) => {
-          const idx = datos.findIndex(
-            (r) => r.año === añoActual && r.se === +e.target.value,
-          );
-          if (idx >= 0) onSelectIdx(idx);
-        }}
-      >
-        {semanasDelAño.map((s) => (
-          <option key={s} value={s}>
-            Semana {s}
-          </option>
-        ))}
-      </select>
-      <span
-        style={{ fontSize: 11, color: N.muted, fontFamily: "var(--font-mono)" }}
-      >
-        {datos[selectedIdx]?.confirmados?.toLocaleString()} casos
-      </span>
-    </div>
-  );
 }
 
-// ── CONSTANTE DE ESCALA: hace que Ai tenga magnitud visible en el canvas ──
-// Sin esto los valores son ~0.0001 y la normalización los aplana visualmente
-const AI_ESCALA = 12;
+function getBBox(containerPointFn, focusSet, W, H, latRange, lonRange) {
+  if (!focusSet.length) return null;
+  let pxMin = W,
+    pxMax = 0,
+    pyMin = H,
+    pyMax = 0;
+  for (const f of focusSet) {
+    const cp = containerPointFn([f.lat, f.lon]);
+    const rx = f.sigma * (W / lonRange) * CUTOFF;
+    const ry = f.sigma * (H / latRange) * CUTOFF;
+    pxMin = Math.min(pxMin, Math.max(0, Math.floor((cp.x - rx) / RES) * RES));
+    pxMax = Math.max(pxMax, Math.min(W, Math.ceil(cp.x + rx)));
+    pyMin = Math.min(pyMin, Math.max(0, Math.floor((cp.y - ry) / RES) * RES));
+    pyMax = Math.max(pyMax, Math.min(H, Math.ceil(cp.y + ry)));
+  }
+  if (pxMax <= pxMin || pyMax <= pyMin) return null;
+  return { pxMin, pxMax, pyMin, pyMax };
+}
 
-export default function SimulatorView({
+function renderCanvas(
+  canvas,
+  map,
+  foci,
   disease,
-  datos,
-  currentGt,
-  selectedIdx,
-  onSelectIdx,
-  onAgregarRegistro,
-}) {
+  layers,
+  isCalculo,
+  onStatsUpdate,
+  onCriticalUpdate,
+) {
+  if (!canvas || !map || !foci?.length) return;
+
+  const size = map.getSize();
+  const W = size.x,
+    H = size.y;
+  if (!W || !H) return;
+
+  canvas.width = W;
+  canvas.height = H;
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+
+  const bounds = map.getBounds();
+  const latN = bounds.getNorth();
+  const lonW = bounds.getWest();
+  const latRange = bounds.getNorth() - bounds.getSouth();
+  const lonRange = bounds.getEast() - bounds.getWest();
+
+  const cpFn = (latlng) => map.latLngToContainerPoint(latlng);
+
   const theme = DISEASE_THEME[disease];
-  const level = getGtLevel(currentGt ?? 0);
+  const fociBase = foci.filter((f) => f.tipo === "base");
+  const fociHip = foci.filter((f) => f.tipo === "foco");
+  const activeFoci = fociBase.length ? fociBase : foci;
 
-  const [calcMode, setCalcMode] = useState(false);
-  const [addingFocus, setAddingFocus] = useState(false);
-  const [mostrarModal, setMostrarModal] = useState(false);
-  const [layers, setLayers] = useState({
-    heatmap: true,
-    gradient: false,
-    contours: false,
-    critical: false,
-  });
-  const [stats, setStats] = useState(null);
-  const [criticals, setCriticals] = useState([]);
-  const [activeTab, setActiveTab] = useState("factores");
-  const [factoresGlobales, setFactoresGlobales] = useState(DEFAULT_FACTORES);
-  const [focos, setFocos] = useState([]);
-  const [focoSeleccionado, setFocoSeleccionado] = useState(null);
-
-  // ── Proyección ─────────────────────────────────────────────────────────────
-  const [semanaProyeccion, setSemanaProyeccion] = useState(0);
-  const [gtProy, setGtProy] = useState(null);
-  const [focosProy, setFocosProy] = useState([]);
-  const proyectandoRef = useRef(false);
-  const intervalRef = useRef(null);
-
-  // Usamos ref para proyectando para evitar la race condition del useEffect
-  const [proyectandoState, setProyectandoState] = useState(false);
-
-  const iniciarProyeccion = useCallback(() => {
-    if (proyectandoRef.current) return;
-    proyectandoRef.current = true;
-    setProyectandoState(true);
-    setSemanaProyeccion(0);
-    const gtInicial = Math.max(0.05, currentGt ?? 0.05);
-    setGtProy(gtInicial);
-    setFocosProy(focos.map((f) => ({ ...f })));
-
-    let semana = 0;
-    let gtActual = gtInicial;
-    let focosActuales = focos.map((f) => ({ ...f }));
-
-    const vac = factoresGlobales.vacuna ?? 0;
-    const fum = factoresGlobales.intervention ?? 0;
-    // beta > 1 = expansión, beta < 1 = contracción
-    const beta = 1.18 * (1 - 0.61 * vac) * (1 - 0.35 * fum);
-
-    intervalRef.current = setInterval(() => {
-      semana += 1;
-      gtActual = Math.min(1, Math.max(0.001, gtActual * beta));
-      focosActuales = focosActuales.map((f) => {
-        const betaF =
-          1.18 *
-          (1 - 0.61 * (f.factores.vacuna ?? 0)) *
-          (1 - 0.35 * (f.factores.intervention ?? 0));
-        return {
-          ...f,
-          factores: {
-            ...f.factores,
-            casos: Math.max(1, Math.round(f.factores.casos * betaF)),
-          },
-        };
-      });
-
-      setGtProy(gtActual);
-      setFocosProy([...focosActuales]);
-      setSemanaProyeccion(semana);
-
-      if (semana >= 8) {
-        clearInterval(intervalRef.current);
-        proyectandoRef.current = false;
-        setProyectandoState(false);
-      }
-    }, 800);
-  }, [focos, currentGt, factoresGlobales]);
-
-  const reiniciarProyeccion = useCallback(() => {
-    clearInterval(intervalRef.current);
-    proyectandoRef.current = false;
-    setProyectandoState(false);
-    setSemanaProyeccion(0);
-    setGtProy(null);
-    setFocosProy([]);
-  }, []);
-
-  // Limpiar al desmontar
-  useEffect(() => () => clearInterval(intervalRef.current), []);
-
-  const toggleLayer = (k) => setLayers((l) => ({ ...l, [k]: !l[k] }));
-
-  const handleMapClick = useCallback(
-    (lat, lon) => {
-      if (!addingFocus) return;
-      const nuevoFoco = {
-        lat,
-        lon,
-        label: `Zona ${focos.length + 1}`,
-        factores: { ...factoresGlobales },
-        sigmaBase: sigmaDelDistritoMasCercano(lat, lon),
-      };
-      setFocos((prev) => {
-        const nuevos = [...prev, nuevoFoco];
-        setFocoSeleccionado(nuevos.length - 1);
-        return nuevos;
-      });
-      setAddingFocus(false);
-      setActiveTab("factores");
-    },
-    [addingFocus, focos.length, factoresGlobales],
-  );
-
-  const updateFocoFactores = useCallback((idx, nuevosFactores) => {
-    setFocos((prev) =>
-      prev.map((f, i) => (i === idx ? { ...f, factores: nuevosFactores } : f)),
-    );
-  }, []);
-
-  const factoresActivos =
-    focoSeleccionado !== null
-      ? (focos[focoSeleccionado]?.factores ?? factoresGlobales)
-      : factoresGlobales;
-
-  const setFactoresActivos = useCallback(
-    (nuevos) => {
-      if (focoSeleccionado !== null)
-        updateFocoFactores(focoSeleccionado, nuevos);
-      else setFactoresGlobales(nuevos);
-    },
-    [focoSeleccionado, updateFocoFactores],
-  );
-
-  // ── fociCalc: el corazón del modelo ────────────────────────────────────────
-  // FIX: AI_ESCALA asegura que los valores sean visibles en el canvas
-  // FIX: Fg modifica Ai de forma que el mapa cambie visiblemente al mover sliders
-  const fociCalc = useMemo(() => {
-    const GtBase = gtProy !== null ? gtProy : Math.max(0.01, currentGt ?? 0.01);
-    const Fg = calcularF(factoresGlobales);
-
-    const zonas = calcularIntensidades(GtBase);
-    const baseZonas = zonas.map((z) => ({
-      lat: z.lat,
-      lon: z.lon,
-      // AI_ESCALA amplifica para que el canvas lo detecte
-      // Fg multiplica directamente → mover sliders cambia el mapa
-      Ai: z.Ai * Fg * AI_ESCALA,
-      sigma: calcularSigma(factoresGlobales, z.sigma),
-      nombre: z.nombre,
-      tipo: "base",
-    }));
-
-    const focosSource = focosProy.length > 0 ? focosProy : focos;
-    const focosHip = focosSource.map((f) => {
-      const Ff = calcularF(f.factores);
-      const sigF = calcularSigma(f.factores, f.sigmaBase ?? 0.006);
-      // Intensidad del foco: casos × factor ambiental × escala
-      // Normalizado por población total de SCZ
-      const Ai =
-        (f.factores.casos / 1453549) * 100000 * Ff * GtBase * AI_ESCALA * 0.3;
-      return {
-        lat: f.lat,
-        lon: f.lon,
-        Ai,
-        sigma: sigF,
-        nombre: f.label,
-        tipo: "foco",
-      };
+  const bbox = getBBox(cpFn, activeFoci, W, H, latRange, lonRange);
+  if (!bbox) {
+    onStatsUpdate?.({
+      rAvg: 0,
+      rMax: 0,
+      rMin: 0,
+      gradAvg: 0,
+      maxPos: { lat: 0, lon: 0 },
+      fociCount: foci.length,
     });
+    onCriticalUpdate?.([]);
+    return;
+  }
 
-    return [...baseZonas, ...focosHip];
-  }, [disease, currentGt, factoresGlobales, focos, focosProy, gtProy]);
+  const base = calcLoop(activeFoci, bbox, W, H, latN, lonW, latRange, lonRange);
+  const { count: cBase, rMin: rMinB, rMax: rMaxB } = base;
+  const rRangeB = rMaxB > rMinB ? rMaxB - rMinB : 0.001;
 
-  const Fcompuesto = calcularF(factoresActivos);
+  onStatsUpdate?.({
+    rAvg: cBase > 0 ? base.totalR / cBase : 0,
+    rMax: rMaxB,
+    rMin: rMinB,
+    gradAvg: cBase > 0 ? base.totalGrad / cBase : 0,
+    maxPos: base.maxPos,
+    fociCount: foci.length,
+  });
 
-  const tabs = calcMode
-    ? [
-        { id: "capas", label: "Visualización" },
-        { id: "math", label: "Fórmulas" },
-        { id: "criticos", label: "Epicentros" },
-      ]
-    : [
-        {
-          id: "factores",
-          label:
-            focoSeleccionado !== null
-              ? `Zona ${focoSeleccionado + 1}`
-              : "Factores",
-        },
-        { id: "focos", label: "Zonas de brote" },
-      ];
+  let hip = null,
+    rRangeH = 0;
+  if (fociHip.length) {
+    const bboxH = getBBox(cpFn, fociHip, W, H, latRange, lonRange);
+    if (bboxH) {
+      hip = calcLoop(fociHip, bboxH, W, H, latN, lonW, latRange, lonRange);
+      rRangeH = hip.rMax > hip.rMin ? hip.rMax - hip.rMin : 0.001;
+    }
+  }
 
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div
-        style={{
-          height: 54,
-          background: N.surface,
-          borderBottom: `1px solid ${N.border}`,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 16px",
-          gap: 10,
-          flexShrink: 0,
-          boxShadow: "0 1px 4px rgba(13,17,23,0.05)",
-        }}
-      >
-        <h1
-          style={{
-            fontFamily: "var(--font-display)",
-            fontSize: 14,
-            fontWeight: 700,
-            color: N.text,
-            letterSpacing: "-0.2px",
-          }}
-        >
-          Mapa de riesgo
-        </h1>
-        <div style={{ flex: 1 }} />
-        <WeekSelector
-          datos={datos}
-          selectedIdx={selectedIdx}
-          onSelectIdx={onSelectIdx}
-        />
+  if (layers.heatmap) {
+    const imgData = ctx.createImageData(W, H);
+    const d = imgData.data;
 
-        {/* Badge nivel */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "5px 12px",
-            borderRadius: 100,
-            background: level.bg,
-            border: `1px solid ${level.color}40`,
-          }}
-        >
-          <div
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: level.color,
-              animation: "blink 1.5s ease-in-out infinite",
-            }}
-          />
-          <span
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              fontWeight: 700,
-              color: level.color,
-              letterSpacing: 0.5,
-            }}
-          >
-            {level.label}
-          </span>
-        </div>
+    for (let i = 0; i < cBase; i++) {
+      const norm = (base.rArr[i] - rMinB) / rRangeB;
+      if (norm < 0.08) continue;
+      const col = theme.heatmap(norm);
+      const m = col.match(/[\d.]+/g);
+      if (!m) continue;
+      const cr = +m[0],
+        cg = +m[1],
+        cb = +m[2];
+      const ca = Math.round(+m[3] * 255);
+      const bx = base.pxArr[i],
+        by = base.pyArr[i];
+      for (let dy = 0; dy < RES && by + dy < H; dy++)
+        for (let dx = 0; dx < RES && bx + dx < W; dx++) {
+          const off = ((by + dy) * W + (bx + dx)) * 4;
+          d[off] = cr;
+          d[off + 1] = cg;
+          d[off + 2] = cb;
+          d[off + 3] = ca;
+        }
+    }
+    ctx.putImageData(imgData, 0, 0);
 
-        {/* Nuevo registro */}
-        <button
-          onClick={() => setMostrarModal(true)}
-          style={{
-            padding: "6px 14px",
-            borderRadius: 8,
-            border: `1px solid ${N.teal}`,
-            background: "white",
-            color: N.teal,
-            fontFamily: "var(--font-body)",
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            transition: "all 0.12s",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = N.teal;
-            e.currentTarget.style.color = "white";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "white";
-            e.currentTarget.style.color = N.teal;
-          }}
-        >
-          <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span> Nuevo registro
-        </button>
+    if (hip) {
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      const imgH = ctx.createImageData(W, H);
+      const dH = imgH.data;
+      for (let i = 0; i < hip.count; i++) {
+        const norm = (hip.rArr[i] - hip.rMin) / rRangeH;
+        if (norm < 0.04) continue;
+        const col = theme.heatmap(Math.pow(norm, 0.5));
+        const m = col.match(/[\d.]+/g);
+        if (!m) continue;
+        const cr = +m[0],
+          cg = +m[1],
+          cb = +m[2];
+        const ca = Math.round(Math.min(+m[3] * 2.5, 1) * 255);
+        const bx = hip.pxArr[i],
+          by = hip.pyArr[i];
+        for (let dy = 0; dy < RES && by + dy < H; dy++)
+          for (let dx = 0; dx < RES && bx + dx < W; dx++) {
+            const off = ((by + dy) * W + (bx + dx)) * 4;
+            dH[off] = cr;
+            dH[off + 1] = cg;
+            dH[off + 2] = cb;
+            dH[off + 3] = ca;
+          }
+      }
+      ctx.putImageData(imgH, 0, 0);
+      ctx.restore();
+    }
+  }
 
-        {/* Modo matemático */}
-        <button
-          onClick={() => setCalcMode(!calcMode)}
-          style={{
-            padding: "6px 14px",
-            borderRadius: 8,
-            border: `1px solid ${calcMode ? N.lila : N.border}`,
-            background: calcMode ? N.lila : "white",
-            color: calcMode ? "white" : N.muted,
-            fontFamily: "var(--font-mono)",
-            fontSize: 11,
-            fontWeight: 600,
-            cursor: "pointer",
-            transition: "all 0.12s",
-            boxShadow: calcMode ? "0 2px 8px rgba(124,58,237,0.25)" : "none",
-          }}
-        >
-          ∫ Modo matemático
-        </button>
-      </div>
+  if (isCalculo && layers.contours) {
+    for (const lvl of [0.15, 0.3, 0.5, 0.7, 0.85]) {
+      const target = rMinB + lvl * rRangeB;
+      const tol = rRangeB * 0.025;
+      ctx.beginPath();
+      for (let i = 0; i < cBase; i++) {
+        if (Math.abs(base.rArr[i] - target) < tol)
+          ctx.rect(base.pxArr[i], base.pyArr[i], 2, 2);
+      }
+      ctx.fillStyle = `rgba(13,148,136,${0.25 + lvl * 0.5})`;
+      ctx.fill();
+    }
+  }
 
-      {/* ── Barra proyección ─────────────────────────────────────────────────── */}
-      <div
-        style={{
-          background: "white",
-          borderBottom: `1px solid ${N.border}`,
-          padding: "7px 16px",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 12,
-            color: N.mid,
-            fontWeight: 600,
-            whiteSpace: "nowrap",
-          }}
-        >
-          Proyección 8 semanas
-        </span>
-        {!proyectandoState && semanaProyeccion === 0 && (
-          <button
-            onClick={iniciarProyeccion}
-            style={{
-              padding: "4px 14px",
-              borderRadius: 100,
-              background: N.blue,
-              color: "white",
-              border: "none",
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              boxShadow: "0 2px 6px rgba(29,78,216,0.3)",
-            }}
-          >
-            ▶ Simular expansión
-          </button>
-        )}
-        {(proyectandoState || semanaProyeccion > 0) && (
-          <>
-            <div
-              style={{
-                flex: 1,
-                height: 5,
-                background: N.border,
-                borderRadius: 5,
-              }}
-            >
-              <div
-                style={{
-                  height: "100%",
-                  width: `${(semanaProyeccion / 8) * 100}%`,
-                  background: semanaProyeccion >= 8 ? N.green : N.blue,
-                  borderRadius: 5,
-                  transition: "width 0.5s ease",
-                }}
-              />
-            </div>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 12,
-                fontWeight: 700,
-                color: N.mid,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {semanaProyeccion >= 8
-                ? "Completado"
-                : `+${semanaProyeccion} sem.`}
-            </span>
-            {gtProy !== null && (
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: getGtLevel(gtProy).color,
-                  fontWeight: 600,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Gt={gtProy.toFixed(3)}
-              </span>
-            )}
-            <button
-              onClick={reiniciarProyeccion}
-              style={{
-                padding: "4px 12px",
-                borderRadius: 100,
-                background: "transparent",
-                color: N.muted,
-                border: `1px solid ${N.border}`,
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
-            >
-              ↺ Reiniciar
-            </button>
-          </>
-        )}
-      </div>
+  if (isCalculo && layers.gradient) {
+    const step = 44;
+    for (let i = 0; i < cBase; i++) {
+      const px = base.pxArr[i],
+        py = base.pyArr[i];
+      if (px % step > RES || py % step > RES) continue;
+      const gL = base.gLatArr[i],
+        gN = base.gLonArr[i];
+      const mag = Math.sqrt(gL * gL + gN * gN);
+      if (mag < 1e-8) continue;
+      const scale = Math.min(mag * 6000, 24);
+      const dx = (gN / mag) * scale,
+        dy = -(gL / mag) * scale;
+      const al = Math.min(0.3 + mag * 3000, 0.85);
+      const col = `rgba(220,38,38,${al})`;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + dx, py + dy);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      const ang = Math.atan2(dy, dx);
+      ctx.beginPath();
+      ctx.moveTo(px + dx, py + dy);
+      ctx.lineTo(
+        px + dx - 5 * Math.cos(ang - 0.45),
+        py + dy - 5 * Math.sin(ang - 0.45),
+      );
+      ctx.lineTo(
+        px + dx - 5 * Math.cos(ang + 0.45),
+        py + dy - 5 * Math.sin(ang + 0.45),
+      );
+      ctx.closePath();
+      ctx.fillStyle = col;
+      ctx.fill();
+    }
+  }
 
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* ── Mapa ──────────────────────────────────────────────────────────── */}
-        <div style={{ flex: 1, position: "relative" }}>
-          <MapContainer
-            center={SCZ_CENTER}
-            zoom={SCZ_ZOOM}
-            style={{ width: "100%", height: "100%" }}
-          >
-            <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
-            {SCZ_ANILLOS.map((a, i) => (
-              <Circle
-                key={a.name}
-                center={SCZ_CENTER}
-                radius={a.radius * 111320}
-                pathOptions={{
-                  color: `rgba(13,148,136,${0.1 + i * 0.03})`,
-                  weight: 1,
-                  dashArray: "5 6",
-                  fillOpacity: 0,
-                }}
-              />
-            ))}
-            {SCZ_LANDMARKS.map((lm) => (
-              <Marker
-                key={lm.name}
-                position={[lm.lat, lm.lon]}
-                icon={L.divIcon({
-                  className: "",
-                  html: `<div style="background:rgba(255,255,255,0.96);border:1px solid #e2e6ef;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 8px rgba(13,17,23,0.10)">${lm.icon}</div>`,
-                  iconSize: [28, 28],
-                  iconAnchor: [14, 14],
-                })}
-              >
-                <Tooltip direction="top" offset={[0, -16]} opacity={0.97}>
-                  <span
-                    style={{
-                      fontFamily: "'DM Sans',sans-serif",
-                      fontSize: 12,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {lm.name}
-                  </span>
-                </Tooltip>
-              </Marker>
-            ))}
+  if (isCalculo && layers.critical) {
+    const cpStep = Math.max(10, Math.round(Math.min(W, H) / 22));
+    const mags = [];
+    for (let i = 0; i < cBase; i++) {
+      const gL = base.gLatArr[i],
+        gN = base.gLonArr[i];
+      mags.push(Math.sqrt(gL * gL + gN * gN));
+    }
+    mags.sort((a, b) => a - b);
+    const gradThreshold = mags[Math.floor(mags.length * 0.04)] ?? 0;
 
-            {focos.map((f, i) => {
-              const isSelected = focoSeleccionado === i;
-              const Ff = calcularF(f.factores);
-              const radio = 150 + (f.factores.casos / 500) * 600;
-              const intensidad = Math.min(1, Ff / 2.5);
-              return (
-                <Circle
-                  key={i}
-                  center={[f.lat, f.lon]}
-                  radius={radio}
-                  pathOptions={{
-                    color: isSelected ? N.blue : theme.primary,
-                    fillColor: theme.primary,
-                    fillOpacity: isSelected ? 0.2 : 0.05 + intensidad * 0.18,
-                    weight: isSelected ? 2.5 : 1.5,
-                    opacity: isSelected ? 1 : 0.5 + intensidad * 0.4,
-                  }}
-                  eventHandlers={{
-                    click: (e) => {
-                      e.originalEvent.stopPropagation();
-                      setFocoSeleccionado(isSelected ? null : i);
-                      setActiveTab("factores");
-                    },
-                  }}
-                >
-                  <Tooltip>
-                    <div
-                      style={{
-                        fontFamily: "'DM Sans',sans-serif",
-                        fontSize: 12,
-                      }}
-                    >
-                      <strong>{f.label}</strong> — {f.factores.casos} casos
-                      <br />
-                      <span style={{ fontSize: 10, color: "#6e7891" }}>
-                        F={Ff.toFixed(2)} ·{" "}
-                        {isSelected ? "✓ editando" : "clic para editar"}
-                      </span>
-                    </div>
-                  </Tooltip>
-                </Circle>
-              );
-            })}
+    const crits = [];
+    for (let i = 0; i < cBase; i++) {
+      const px = base.pxArr[i],
+        py = base.pyArr[i];
+      if (px % cpStep > RES || py % cpStep > RES) continue;
+      const gL = base.gLatArr[i],
+        gN = base.gLonArr[i];
+      const mag = Math.sqrt(gL * gL + gN * gN);
+      if (mag > gradThreshold) continue;
 
-            <HeatmapLayer
-              foci={fociCalc}
-              disease={disease}
-              layers={layers}
-              mode={calcMode ? "calculo" : "normal"}
-              onStatsUpdate={setStats}
-              onCriticalUpdate={setCriticals}
-            />
-            <ClickHandler
-              addingFocus={addingFocus}
-              onAdd={handleMapClick}
-              foci={fociCalc}
-              theme={theme}
-            />
-          </MapContainer>
+      const lat = latN - (py / H) * latRange;
+      const lon = lonW + (px / W) * lonRange;
+      const H2 = hessian(lat, lon, foci);
+      const type = classifyCritical(H2);
+      const r = base.rArr[i];
 
-          {/* Info card */}
-          <div
-            style={{
-              position: "absolute",
-              top: 12,
-              left: 12,
-              zIndex: 1000,
-              background: "rgba(255,255,255,0.97)",
-              backdropFilter: "blur(8px)",
-              borderRadius: 12,
-              padding: "12px 16px",
-              border: `1px solid ${level.color}30`,
-              boxShadow: "var(--shadow-md)",
-              minWidth: 160,
-            }}
-          >
-            <div
-              style={{
-                fontSize: 10,
-                color: N.muted,
-                fontFamily: "var(--font-mono)",
-                letterSpacing: 1,
-                marginBottom: 4,
-              }}
-            >
-              Semana {datos?.[selectedIdx]?.se} · {datos?.[selectedIdx]?.año}
-            </div>
-            <div
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 26,
-                fontWeight: 700,
-                color: level.color,
-                lineHeight: 1,
-              }}
-            >
-              {(currentGt ?? 0).toFixed(3)}
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: level.color,
-                fontWeight: 600,
-                marginTop: 3,
-              }}
-            >
-              {level.label}
-            </div>
-            <div
-              style={{
-                marginTop: 10,
-                height: 3,
-                background: N.border,
-                borderRadius: 3,
-              }}
-            >
-              <div
-                style={{
-                  height: "100%",
-                  width: `${Math.min((currentGt ?? 0) * 100, 100)}%`,
-                  background: level.color,
-                  borderRadius: 3,
-                  transition: "width 0.4s",
-                }}
-              />
-            </div>
-          </div>
+      const tooClose = crits.some(
+        (c) =>
+          Math.abs(c.px - px) < cpStep * 1.3 &&
+          Math.abs(c.py - py) < cpStep * 1.3,
+      );
+      if (tooClose) continue;
 
-          {/* Stats rápidas */}
-          {stats && (
-            <div
-              style={{
-                position: "absolute",
-                bottom: 70,
-                left: 12,
-                zIndex: 1000,
-                background: "rgba(255,255,255,0.97)",
-                backdropFilter: "blur(8px)",
-                borderRadius: 10,
-                padding: "10px 14px",
-                border: `1px solid ${N.border}`,
-                boxShadow: "var(--shadow-sm)",
-                fontSize: 11,
-                fontFamily: "var(--font-mono)",
-              }}
-            >
-              <div
-                style={{
-                  color: N.faint,
-                  fontSize: 9,
-                  letterSpacing: 1,
-                  marginBottom: 6,
-                }}
-              >
-                CAMPO R(x,y)
-              </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "4px 14px",
-                }}
-              >
-                <span style={{ color: N.muted }}>R máx</span>
-                <span style={{ color: N.text, fontWeight: 600 }}>
-                  {stats.rMax?.toFixed(4)}
-                </span>
-                <span style={{ color: N.muted }}>R prom</span>
-                <span style={{ color: N.text, fontWeight: 600 }}>
-                  {stats.rAvg?.toFixed(4)}
-                </span>
-                <span style={{ color: N.muted }}>|∇R| prom</span>
-                <span style={{ color: N.teal, fontWeight: 600 }}>
-                  {stats.gradAvg?.toFixed(4)}
-                </span>
-              </div>
-            </div>
-          )}
+      const col =
+        type === "máximo"
+          ? "#e11d48"
+          : type === "mínimo"
+            ? "#059669"
+            : "#d97706";
+      ctx.beginPath();
+      ctx.arc(px, py, 11, 0, Math.PI * 2);
+      ctx.fillStyle = col + "18";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(px, py, 7, 0, Math.PI * 2);
+      ctx.strokeStyle = col + "90";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = col;
+      ctx.fill();
+      ctx.fillStyle = col;
+      ctx.font = "bold 9px 'DM Mono',monospace";
+      ctx.fillText(type === "máximo" ? "epicentro" : type, px + 13, py - 11);
+      crits.push({ lat, lon, type, r, D: H2.D, Rxx: H2.Rxx, px, py });
+    }
+    onCriticalUpdate?.(crits.map(({ px, py, ...rest }) => rest));
+  } else {
+    onCriticalUpdate?.([]);
+  }
+}
 
-          {/* Botón agregar zona */}
-          <button
-            onClick={() => {
-              setAddingFocus(!addingFocus);
-              setFocoSeleccionado(null);
-            }}
-            style={{
-              position: "absolute",
-              bottom: 16,
-              left: "50%",
-              transform: "translateX(-50%)",
-              zIndex: 1000,
-              padding: "9px 22px",
-              borderRadius: 100,
-              border: `1px solid ${addingFocus ? N.blue : N.border}`,
-              background: addingFocus ? N.blue : "rgba(255,255,255,0.97)",
-              color: addingFocus ? "white" : N.mid,
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-              backdropFilter: "blur(8px)",
-              boxShadow: addingFocus
-                ? "0 4px 14px rgba(29,78,216,0.35)"
-                : "0 2px 8px rgba(13,17,23,0.1)",
-              transition: "all 0.12s",
-            }}
-          >
-            {addingFocus
-              ? "📍 Haz clic en el mapa"
-              : "+ Agregar zona hipotética"}
-          </button>
-        </div>
+export default function HeatmapLayer({
+  foci,
+  disease,
+  layers,
+  mode,
+  onStatsUpdate,
+  onCriticalUpdate,
+}) {
+  const map = useMap();
+  const canvasRef = useRef(null);
+  const isCalculo = mode === "calculo";
 
-        {/* ── Panel lateral ──────────────────────────────────────────────────── */}
-        <div
-          style={{
-            width: 290,
-            background: N.surface,
-            borderLeft: `1px solid ${N.border}`,
-            display: "flex",
-            flexDirection: "column",
-            flexShrink: 0,
-            overflow: "hidden",
-          }}
-        >
-          {/* Multiplicador F */}
-          {!calcMode && (
-            <div
-              style={{
-                padding: "10px 14px",
-                background: N.surface2,
-                borderBottom: `1px solid ${N.border}`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div>
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: N.faint,
-                    fontFamily: "var(--font-mono)",
-                    letterSpacing: 1,
-                  }}
-                >
-                  MULTIPLICADOR AMBIENTAL
-                </div>
-                <div style={{ fontSize: 11, color: N.muted, marginTop: 1 }}>
-                  {Fcompuesto > 1.15
-                    ? "↑ Condiciones amplifican el riesgo"
-                    : "↓ Condiciones reducen el riesgo"}
-                </div>
-              </div>
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 16,
-                  fontWeight: 700,
-                  color:
-                    Fcompuesto > 1.3
-                      ? N.rose
-                      : Fcompuesto > 1.1
-                        ? N.amber
-                        : N.green,
-                }}
-              >
-                ×{Fcompuesto.toFixed(3)}
-              </span>
-            </div>
-          )}
+  useEffect(() => {
+    if (!map) return;
+    const L = window.L;
+    const pane = map.getPane("overlayPane");
+    const canvas = document.createElement("canvas");
+    canvas.className = "brote-canvas";
+    Object.assign(canvas.style, {
+      position: "absolute",
+      top: "0",
+      left: "0",
+      pointerEvents: "none",
+      zIndex: "250",
+    });
+    pane.appendChild(canvas);
+    canvasRef.current = canvas;
 
-          {/* Tabs */}
-          <div
-            style={{
-              display: "flex",
-              borderBottom: `1px solid ${N.border}`,
-              flexShrink: 0,
-            }}
-          >
-            {tabs.map((t) => {
-              const active = activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setActiveTab(t.id)}
-                  style={{
-                    flex: 1,
-                    padding: "11px 4px",
-                    border: "none",
-                    cursor: "pointer",
-                    background: "transparent",
-                    color: active ? N.teal : N.muted,
-                    fontFamily: "var(--font-body)",
-                    fontSize: 12,
-                    fontWeight: active ? 600 : 400,
-                    borderBottom: active
-                      ? `2px solid ${N.teal}`
-                      : "2px solid transparent",
-                    transition: "all 0.12s",
-                  }}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
-          </div>
+    function onMove() {
+      const tl = map.containerPointToLayerPoint([0, 0]);
+      L.DomUtil.setPosition(canvas, tl);
+    }
+    map.on("move", onMove);
 
-          <div style={{ flex: 1, overflowY: "auto", padding: "16px 14px" }}>
-            {/* ── Factores ── */}
-            {activeTab === "factores" && (
-              <div className="fade-in">
-                {focoSeleccionado !== null && (
-                  <div
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 8,
-                      marginBottom: 16,
-                      background: "#eff6ff",
-                      border: `1px solid ${N.blue}30`,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 7,
-                        height: 7,
-                        borderRadius: "50%",
-                        background: N.blue,
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span
-                      style={{ fontSize: 12, color: N.blue, fontWeight: 600 }}
-                    >
-                      Editando {focos[focoSeleccionado]?.label}
-                    </span>
-                    <button
-                      onClick={() => {
-                        setFocoSeleccionado(null);
-                        setActiveTab("factores");
-                      }}
-                      style={{
-                        marginLeft: "auto",
-                        background: "none",
-                        border: "none",
-                        color: N.muted,
-                        cursor: "pointer",
-                        fontSize: 16,
-                        padding: 0,
-                      }}
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-                <FactoresPanel
-                  factores={factoresActivos}
-                  onChange={setFactoresActivos}
-                  theme={theme}
-                  showCasos={focoSeleccionado !== null}
-                />
-                {stats && (
-                  <div style={{ marginTop: 8 }}>
-                    <SectionLabel icon="📊">Valores calculados</SectionLabel>
-                    <StatRow
-                      label="Riesgo máximo en el mapa"
-                      value={stats.rMax?.toFixed(4)}
-                      color={N.rose}
-                    />
-                    <StatRow
-                      label="Riesgo promedio"
-                      value={stats.rAvg?.toFixed(4)}
-                      color={N.mid}
-                    />
-                    <StatRow
-                      label="Velocidad de expansión"
-                      value={stats.gradAvg?.toFixed(4)}
-                      color={N.teal}
-                    />
-                    <StatRow
-                      label="Epicentro (lat)"
-                      value={stats.maxPos?.lat?.toFixed(4)}
-                      color={N.mid}
-                    />
-                    <StatRow
-                      label="Epicentro (lon)"
-                      value={stats.maxPos?.lon?.toFixed(4)}
-                      color={N.mid}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
+    return () => {
+      map.off("move", onMove);
+      if (pane.contains(canvas)) pane.removeChild(canvas);
+      canvasRef.current = null;
+    };
+  }, [map]);
 
-            {/* ── Focos ── */}
-            {activeTab === "focos" && (
-              <div className="fade-in">
-                {focos.length === 0 ? (
-                  <div
-                    style={{
-                      textAlign: "center",
-                      padding: "32px 16px",
-                      color: N.faint,
-                    }}
-                  >
-                    <div style={{ fontSize: 32, marginBottom: 12 }}>📍</div>
-                    <div
-                      style={{ fontSize: 13, color: N.muted, marginBottom: 6 }}
-                    >
-                      Sin zonas hipotéticas
-                    </div>
-                    <div style={{ fontSize: 11, color: N.faint }}>
-                      Usa el botón de abajo para simular brotes en zonas
-                      específicas
-                    </div>
-                  </div>
-                ) : (
-                  focos.map((f, i) => {
-                    const isSelected = focoSeleccionado === i;
-                    return (
-                      <div
-                        key={i}
-                        onClick={() => {
-                          setFocoSeleccionado(isSelected ? null : i);
-                          setActiveTab("factores");
-                        }}
-                        style={{
-                          padding: "12px 14px",
-                          borderRadius: 10,
-                          marginBottom: 8,
-                          background: isSelected ? "#eff6ff" : N.surface2,
-                          border: `1px solid ${isSelected ? N.blue + "60" : N.border}`,
-                          cursor: "pointer",
-                          transition: "all 0.12s",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            marginBottom: 4,
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontWeight: 600,
-                              fontSize: 13,
-                              color: isSelected ? N.blue : N.text,
-                            }}
-                          >
-                            {f.label}
-                          </span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setFocos((prev) =>
-                                prev.filter((_, j) => j !== i),
-                              );
-                              if (focoSeleccionado === i)
-                                setFocoSeleccionado(null);
-                            }}
-                            style={{
-                              background: "none",
-                              border: "none",
-                              color: N.rose,
-                              cursor: "pointer",
-                              fontSize: 18,
-                              padding: 0,
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 11,
-                            color: N.muted,
-                            fontFamily: "var(--font-mono)",
-                          }}
-                        >
-                          {f.lat.toFixed(4)}, {f.lon.toFixed(4)}
-                        </div>
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            fontSize: 11,
-                            color: N.muted,
-                            marginTop: 4,
-                          }}
-                        >
-                          <span>
-                            {f.factores.casos} casos · F=
-                            {calcularF(f.factores).toFixed(2)}
-                          </span>
-                          <span
-                            style={{ color: isSelected ? N.blue : N.faint }}
-                          >
-                            {isSelected ? "✓ editando" : "→ clic para editar"}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            )}
+  const draw = useCallback(() => {
+    if (!canvasRef.current || !map) return;
+    const L = window.L;
+    const tl = map.containerPointToLayerPoint([0, 0]);
+    L.DomUtil.setPosition(canvasRef.current, tl);
+    renderCanvas(
+      canvasRef.current,
+      map,
+      foci,
+      disease,
+      layers,
+      isCalculo,
+      onStatsUpdate,
+      onCriticalUpdate,
+    );
+  }, [map, foci, disease, layers, isCalculo, onStatsUpdate, onCriticalUpdate]);
 
-            {/* ── Capas ── */}
-            {activeTab === "capas" && (
-              <div className="fade-in">
-                <SectionLabel>Capas del mapa</SectionLabel>
-                {[
-                  {
-                    key: "heatmap",
-                    label: "Mapa de calor R(x,y)",
-                    desc: "Dónde hay mayor riesgo",
-                    color: theme.primary,
-                  },
-                  {
-                    key: "gradient",
-                    label: "Flechas de expansión ∇R",
-                    desc: "Hacia dónde se propaga el brote",
-                    color: N.teal,
-                  },
-                  {
-                    key: "contours",
-                    label: "Zonas de igual riesgo",
-                    desc: "Líneas que separan niveles de riesgo",
-                    color: N.lila,
-                  },
-                  {
-                    key: "critical",
-                    label: "Epicentros del brote",
-                    desc: "Puntos donde el riesgo es máximo",
-                    color: N.amber,
-                  },
-                ].map(({ key, label, desc, color }) => (
-                  <div
-                    key={key}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "12px 0",
-                      borderBottom: `1px solid ${N.border}`,
-                    }}
-                  >
-                    <div>
-                      <div
-                        style={{ fontSize: 13, fontWeight: 500, color: N.text }}
-                      >
-                        {label}
-                      </div>
-                      <div style={{ fontSize: 11, color: N.muted }}>{desc}</div>
-                    </div>
-                    <div
-                      onClick={() => toggleLayer(key)}
-                      style={{
-                        width: 40,
-                        height: 22,
-                        borderRadius: 11,
-                        background: layers[key] ? color : N.border,
-                        position: "relative",
-                        cursor: "pointer",
-                        transition: "background 0.2s",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: 3,
-                          left: layers[key] ? 21 : 3,
-                          width: 16,
-                          height: 16,
-                          borderRadius: "50%",
-                          background: "white",
-                          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-                          transition: "left 0.2s",
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+  useEffect(() => {
+    draw();
+  }, [draw]);
 
-            {/* ── Fórmulas ── */}
-            {activeTab === "math" && (
-              <div className="fade-in">
-                <SectionLabel>Base matemática del modelo</SectionLabel>
-                {MATH_FORMULAS["dengue"].map((f, i) => (
-                  <MathCard key={i} {...f} />
-                ))}
-              </div>
-            )}
+  useEffect(() => {
+    if (!map) return;
+    map.on("moveend zoomend resize", draw);
+    return () => map.off("moveend zoomend resize", draw);
+  }, [map, draw]);
 
-            {/* ── Epicentros ── */}
-            {activeTab === "criticos" && (
-              <div className="fade-in">
-                <SectionLabel>Epicentros detectados</SectionLabel>
-                {criticals.length === 0 ? (
-                  <div
-                    style={{
-                      textAlign: "center",
-                      color: N.faint,
-                      fontSize: 12,
-                      paddingTop: 20,
-                      lineHeight: 1.8,
-                    }}
-                  >
-                    Activa "Epicentros del brote" en Capas
-                    <br />
-                    para calcularlos
-                  </div>
-                ) : (
-                  criticals.map((c, i) => {
-                    const col =
-                      c.type === "máximo"
-                        ? N.rose
-                        : c.type === "mínimo"
-                          ? N.green
-                          : N.amber;
-                    return (
-                      <div
-                        key={i}
-                        style={{
-                          padding: "10px 12px",
-                          background: N.surface2,
-                          borderRadius: 8,
-                          marginBottom: 8,
-                          border: `1px solid ${col}30`,
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            marginBottom: 4,
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontFamily: "var(--font-mono)",
-                              fontSize: 12,
-                              fontWeight: 700,
-                              color: col,
-                            }}
-                          >
-                            {c.type === "máximo" ? "Epicentro" : c.type}
-                          </span>
-                          <span
-                            style={{
-                              fontFamily: "var(--font-mono)",
-                              fontSize: 11,
-                              color: N.muted,
-                            }}
-                          >
-                            R={c.r.toFixed(4)}
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            fontFamily: "var(--font-mono)",
-                            fontSize: 10,
-                            color: N.muted,
-                            lineHeight: 1.7,
-                          }}
-                        >
-                          {c.lat.toFixed(5)}, {c.lon.toFixed(5)}
-                          <br />
-                          D={c.D?.toFixed(5)}&nbsp;&nbsp;Rxx={c.Rxx?.toFixed(5)}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Modal */}
-      {mostrarModal && (
-        <AgregarRegistroModal
-          onGuardar={onAgregarRegistro}
-          onCerrar={() => setMostrarModal(false)}
-          datosExistentes={datos}
-        />
-      )}
-    </div>
-  );
+  return null;
 }

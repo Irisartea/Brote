@@ -34,6 +34,11 @@ import {
   fFumigacion,
 } from "../utils/mathEngine";
 import AgregarRegistroModal from "./AgregarRegistroModal";
+import {
+  entrenarModeloIA,
+  proyectarHibrido,
+  generarRecomendacion,
+} from "../utils/aiPredictor";
 
 const TILE_URL =
   "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
@@ -66,8 +71,6 @@ const DEFAULT_FACTORES = {
   casos: 20,
 };
 
-// ── Factor ambiental compuesto ─────────────────────────────────────────────
-// Todos los factores combinados en un solo multiplicador para dengue
 function calcularF(factores) {
   return (
     fTemp_dengue(factores.temp) *
@@ -132,7 +135,6 @@ function ClickHandler({ addingFocus, onAdd, foci, theme }) {
   return null;
 }
 
-// ── Slider ─────────────────────────────────────────────────────────────────
 function Slider({
   label,
   sublabel,
@@ -501,9 +503,251 @@ function WeekSelector({ datos, selectedIdx, onSelectIdx }) {
   );
 }
 
-// ── CONSTANTE DE ESCALA: hace que Ai tenga magnitud visible en el canvas ──
-// Sin esto los valores son ~0.0001 y la normalización los aplana visualmente
 const AI_ESCALA = 12;
+
+// ── Panel resumen al finalizar proyección ──────────────────────────────────
+function ResumenProyeccion({ semanasIA, onReiniciar }) {
+  if (!semanasIA || semanasIA.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        background: N.surface,
+        borderRadius: 10,
+        border: `1px solid ${N.border}`,
+        overflow: "hidden",
+        boxShadow: "0 2px 8px rgba(13,17,23,0.06)",
+      }}
+    >
+      <div
+        style={{
+          padding: "8px 14px",
+          background: N.surface2,
+          borderBottom: `1px solid ${N.border}`,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+            color: N.muted,
+            letterSpacing: 1,
+            textTransform: "uppercase",
+            fontWeight: 600,
+          }}
+        >
+          Proyección completa — 8 semanas
+        </span>
+        <button
+          onClick={onReiniciar}
+          style={{
+            background: "none",
+            border: "none",
+            fontSize: 11,
+            color: N.muted,
+            cursor: "pointer",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          ↺ Nueva simulación
+        </button>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          <thead>
+            <tr style={{ background: N.surface2 }}>
+              {["Sem.", "SE", "Gₜ", "Rango", "Tend.", "Alerta", "Método"].map(
+                (h) => (
+                  <th
+                    key={h}
+                    style={{
+                      padding: "6px 10px",
+                      textAlign: "left",
+                      color: N.faint,
+                      fontSize: 9,
+                      letterSpacing: 0.8,
+                      fontWeight: 600,
+                      borderBottom: `1px solid ${N.border}`,
+                    }}
+                  >
+                    {h}
+                  </th>
+                ),
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {semanasIA.map((s, i) => {
+              const level = getGtLevel(s.gt);
+              return (
+                <tr
+                  key={i}
+                  style={{
+                    borderBottom: `1px solid ${N.border}`,
+                    background: i % 2 === 0 ? "white" : N.surface2,
+                  }}
+                >
+                  <td
+                    style={{
+                      padding: "5px 10px",
+                      color: N.mid,
+                      fontWeight: 700,
+                    }}
+                  >
+                    +{s.semana}
+                  </td>
+                  <td style={{ padding: "5px 10px", color: N.muted }}>
+                    SE{s.se}
+                  </td>
+                  <td
+                    style={{
+                      padding: "5px 10px",
+                      color: level.color,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {s.gt.toFixed(3)}
+                  </td>
+                  <td
+                    style={{
+                      padding: "5px 10px",
+                      color: N.faint,
+                      fontSize: 10,
+                    }}
+                  >
+                    [{s.gtMin.toFixed(2)}–{s.gtMax.toFixed(2)}]
+                  </td>
+                  <td
+                    style={{
+                      padding: "5px 10px",
+                      color: s.tendencia === "↑" ? N.rose : N.green,
+                      fontSize: 13,
+                    }}
+                  >
+                    {s.tendencia}
+                  </td>
+                  <td style={{ padding: "5px 10px" }}>
+                    <span
+                      style={{
+                        background: level.bg,
+                        color: level.color,
+                        padding: "1px 7px",
+                        borderRadius: 4,
+                        fontSize: 9,
+                        fontWeight: 700,
+                      }}
+                    >
+                      {level.label}
+                    </span>
+                  </td>
+                  <td
+                    style={{
+                      padding: "5px 10px",
+                      color: s.metodo === "IA" ? N.lila : N.teal,
+                      fontSize: 9,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {s.metodo === "IA" ? "🤖 IA" : "⚙️ Escenario"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Panel de predicción IA (encima del botón simular) ────────────────────
+function PanelPrediccionIA({ recomendacion, modelo }) {
+  if (!recomendacion) return null;
+  return (
+    <div
+      style={{
+        background: "white",
+        borderBottom: `1px solid ${N.border}`,
+        padding: "7px 16px",
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        flexShrink: 0,
+        borderLeft: `3px solid ${recomendacion.color}`,
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              fontSize: 9,
+              fontFamily: "var(--font-mono)",
+              color: N.faint,
+              letterSpacing: 1,
+              textTransform: "uppercase",
+            }}
+          >
+            🤖 Predicción IA · {modelo?.n ?? 0} muestras · R²=
+            {modelo?.r2?.toFixed(2) ?? "—"}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 11, color: N.mid }}>
+            Gₜ en 4 sem:{" "}
+            <strong
+              style={{
+                color: recomendacion.color,
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {recomendacion.gt4}
+            </strong>
+            <span
+              style={{
+                marginLeft: 6,
+                background: recomendacion.color + "18",
+                color: recomendacion.color,
+                padding: "1px 8px",
+                borderRadius: 4,
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {recomendacion.nivel}
+            </span>
+          </span>
+          <span style={{ fontSize: 11, color: N.mid }}>
+            Tendencia:{" "}
+            <strong
+              style={{
+                color:
+                  recomendacion.tendencia === "creciente" ? N.rose : N.green,
+              }}
+            >
+              {recomendacion.tendencia === "creciente"
+                ? "↑ Creciente"
+                : "↓ Decreciente"}
+            </strong>
+          </span>
+          <span style={{ fontSize: 11, color: N.amber, fontWeight: 600 }}>
+            ⚠ {recomendacion.recomendacion}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function SimulatorView({
   disease,
@@ -532,37 +776,85 @@ export default function SimulatorView({
   const [focos, setFocos] = useState([]);
   const [focoSeleccionado, setFocoSeleccionado] = useState(null);
 
-  // ── Proyección ─────────────────────────────────────────────────────────────
+  // ── Modelo IA entrenado una sola vez ───────────────────────────────────────
+  const modeloIA = useMemo(() => {
+    if (!datos || datos.length < 10) return null;
+    return entrenarModeloIA(datos);
+  }, [datos]);
+
+  // ── Proyección completa con semanas IA ────────────────────────────────────
+  const [semanasProyectadas, setSemanasProyectadas] = useState([]);
   const [semanaProyeccion, setSemanaProyeccion] = useState(0);
   const [gtProy, setGtProy] = useState(null);
   const [focosProy, setFocosProy] = useState([]);
+  const [focosAnterior, setFocosAnterior] = useState([]); // para color dinámico
   const proyectandoRef = useRef(false);
   const intervalRef = useRef(null);
-
-  // Usamos ref para proyectando para evitar la race condition del useEffect
   const [proyectandoState, setProyectandoState] = useState(false);
+
+  // Pre-calcular todas las semanas con IA antes de animar
+  const planProyeccion = useRef([]);
 
   const iniciarProyeccion = useCallback(() => {
     if (proyectandoRef.current) return;
     proyectandoRef.current = true;
     setProyectandoState(true);
     setSemanaProyeccion(0);
+    setSemanasProyectadas([]);
+
     const gtInicial = Math.max(0.05, currentGt ?? 0.05);
+    const seActual = datos?.[selectedIdx]?.se ?? 26;
+
+    // Calcular el plan completo con IA + beta
+    const plan = modeloIA
+      ? proyectarHibrido(
+          modeloIA,
+          gtInicial,
+          factoresGlobales,
+          seActual,
+          datos?.[selectedIdx]?.año ?? 2025,
+          datos,
+        )
+      : (() => {
+          // Fallback sin IA
+          const vac = factoresGlobales.vacuna ?? 0;
+          const fum = factoresGlobales.intervention ?? 0;
+          const beta = 1.18 * (1 - 0.61 * vac) * (1 - 0.35 * fum);
+          let gt = gtInicial;
+          return Array.from({ length: 8 }, (_, i) => {
+            const se = ((seActual - 1 + i + 1) % 52) + 1;
+            const prev = gt;
+            gt = Math.min(1, Math.max(0.001, gt * beta));
+            return {
+              semana: i + 1,
+              se,
+              gt,
+              gtMin: Math.max(0, gt - 0.03),
+              gtMax: Math.min(1, gt + 0.03),
+              tendencia: gt > prev ? "↑" : "↓",
+              metodo: "escenario",
+            };
+          });
+        })();
+
+    planProyeccion.current = plan;
+
     setGtProy(gtInicial);
     setFocosProy(focos.map((f) => ({ ...f })));
+    setFocosAnterior([]);
 
     let semana = 0;
-    let gtActual = gtInicial;
-    let focosActuales = focos.map((f) => ({ ...f }));
-
     const vac = factoresGlobales.vacuna ?? 0;
     const fum = factoresGlobales.intervention ?? 0;
-    // beta > 1 = expansión, beta < 1 = contracción
     const beta = 1.18 * (1 - 0.61 * vac) * (1 - 0.35 * fum);
+    let focosActuales = focos.map((f) => ({ ...f }));
 
     intervalRef.current = setInterval(() => {
       semana += 1;
-      gtActual = Math.min(1, Math.max(0.001, gtActual * beta));
+      const planSemana = planProyeccion.current[semana - 1];
+      const gtActual = planSemana?.gt ?? gtInicial;
+
+      const focosAnts = focosActuales.map((f) => ({ ...f }));
       focosActuales = focosActuales.map((f) => {
         const betaF =
           1.18 *
@@ -579,7 +871,9 @@ export default function SimulatorView({
 
       setGtProy(gtActual);
       setFocosProy([...focosActuales]);
+      setFocosAnterior([...focosAnts]);
       setSemanaProyeccion(semana);
+      setSemanasProyectadas((prev) => [...prev, planSemana]);
 
       if (semana >= 8) {
         clearInterval(intervalRef.current);
@@ -587,7 +881,7 @@ export default function SimulatorView({
         setProyectandoState(false);
       }
     }, 800);
-  }, [focos, currentGt, factoresGlobales]);
+  }, [focos, currentGt, factoresGlobales, modeloIA, datos, selectedIdx]);
 
   const reiniciarProyeccion = useCallback(() => {
     clearInterval(intervalRef.current);
@@ -596,10 +890,28 @@ export default function SimulatorView({
     setSemanaProyeccion(0);
     setGtProy(null);
     setFocosProy([]);
+    setFocosAnterior([]);
+    setSemanasProyectadas([]);
+    planProyeccion.current = [];
   }, []);
 
-  // Limpiar al desmontar
   useEffect(() => () => clearInterval(intervalRef.current), []);
+
+  // ── Recomendación IA pre-calculada ────────────────────────────────────────
+  const recomendacionIA = useMemo(() => {
+    if (!modeloIA || !modeloIA.entrenado) return null;
+    const gtInicial = Math.max(0.05, currentGt ?? 0.05);
+    const seActual = datos?.[selectedIdx]?.se ?? 26;
+    const semanas = proyectarHibrido(
+      modeloIA,
+      gtInicial,
+      factoresGlobales,
+      seActual,
+      datos?.[selectedIdx]?.año ?? 2025,
+      datos,
+    );
+    return generarRecomendacion(semanas, factoresGlobales);
+  }, [modeloIA, currentGt, factoresGlobales, datos, selectedIdx]);
 
   const toggleLayer = (k) => setLayers((l) => ({ ...l, [k]: !l[k] }));
 
@@ -644,9 +956,6 @@ export default function SimulatorView({
     [focoSeleccionado, updateFocoFactores],
   );
 
-  // ── fociCalc: el corazón del modelo ────────────────────────────────────────
-  // FIX: AI_ESCALA asegura que los valores sean visibles en el canvas
-  // FIX: Fg modifica Ai de forma que el mapa cambie visiblemente al mover sliders
   const fociCalc = useMemo(() => {
     const GtBase = gtProy !== null ? gtProy : Math.max(0.01, currentGt ?? 0.01);
     const Fg = calcularF(factoresGlobales);
@@ -655,8 +964,6 @@ export default function SimulatorView({
     const baseZonas = zonas.map((z) => ({
       lat: z.lat,
       lon: z.lon,
-      // AI_ESCALA amplifica para que el canvas lo detecte
-      // Fg multiplica directamente → mover sliders cambia el mapa
       Ai: z.Ai * Fg * AI_ESCALA,
       sigma: calcularSigma(factoresGlobales, z.sigma),
       nombre: z.nombre,
@@ -667,8 +974,6 @@ export default function SimulatorView({
     const focosHip = focosSource.map((f) => {
       const Ff = calcularF(f.factores);
       const sigF = calcularSigma(f.factores, f.sigmaBase ?? 0.006);
-      // Intensidad del foco: casos × factor ambiental × escala
-      // Normalizado por población total de SCZ
       const Ai =
         (f.factores.casos / 1453549) * 100000 * Ff * GtBase * AI_ESCALA * 0.3;
       return {
@@ -702,6 +1007,10 @@ export default function SimulatorView({
         },
         { id: "focos", label: "Zonas de brote" },
       ];
+
+  // Gt actual de la semana animada (para mostrar en grande)
+  const semanaActualPlan =
+    semanaProyeccion > 0 ? planProyeccion.current[semanaProyeccion - 1] : null;
 
   return (
     <div
@@ -743,8 +1052,6 @@ export default function SimulatorView({
           selectedIdx={selectedIdx}
           onSelectIdx={onSelectIdx}
         />
-
-        {/* Badge nivel */}
         <div
           style={{
             display: "flex",
@@ -777,8 +1084,6 @@ export default function SimulatorView({
             {level.label}
           </span>
         </div>
-
-        {/* Nuevo registro */}
         <button
           onClick={() => setMostrarModal(true)}
           style={{
@@ -807,8 +1112,6 @@ export default function SimulatorView({
         >
           <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span> Nuevo registro
         </button>
-
-        {/* Modo matemático */}
         <button
           onClick={() => setCalcMode(!calcMode)}
           style={{
@@ -829,6 +1132,11 @@ export default function SimulatorView({
         </button>
       </div>
 
+      {/* ── Panel predicción IA ──────────────────────────────────────────────── */}
+      {recomendacionIA && semanaProyeccion === 0 && !proyectandoState && (
+        <PanelPrediccionIA recomendacion={recomendacionIA} modelo={modeloIA} />
+      )}
+
       {/* ── Barra proyección ─────────────────────────────────────────────────── */}
       <div
         style={{
@@ -836,104 +1144,244 @@ export default function SimulatorView({
           borderBottom: `1px solid ${N.border}`,
           padding: "7px 16px",
           display: "flex",
-          alignItems: "center",
-          gap: 12,
+          flexDirection: "column",
+          gap: 6,
           flexShrink: 0,
         }}
       >
-        <span
-          style={{
-            fontSize: 12,
-            color: N.mid,
-            fontWeight: 600,
-            whiteSpace: "nowrap",
-          }}
-        >
-          Proyección 8 semanas
-        </span>
-        {!proyectandoState && semanaProyeccion === 0 && (
-          <button
-            onClick={iniciarProyeccion}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span
             style={{
-              padding: "4px 14px",
-              borderRadius: 100,
-              background: N.blue,
-              color: "white",
-              border: "none",
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
+              fontSize: 12,
+              color: N.mid,
+              fontWeight: 600,
               whiteSpace: "nowrap",
-              boxShadow: "0 2px 6px rgba(29,78,216,0.3)",
             }}
           >
-            ▶ Simular expansión
-          </button>
-        )}
-        {(proyectandoState || semanaProyeccion > 0) && (
-          <>
-            <div
+            Proyección 8 semanas
+          </span>
+
+          {!proyectandoState && semanaProyeccion === 0 && (
+            <button
+              onClick={iniciarProyeccion}
               style={{
-                flex: 1,
-                height: 5,
-                background: N.border,
-                borderRadius: 5,
+                padding: "4px 14px",
+                borderRadius: 100,
+                background: N.blue,
+                color: "white",
+                border: "none",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                boxShadow: "0 2px 6px rgba(29,78,216,0.3)",
               }}
             >
+              ▶ Simular expansión
+            </button>
+          )}
+
+          {(proyectandoState || semanaProyeccion > 0) && (
+            <>
+              {/* Barra de progreso con segmentos IA vs escenario */}
               <div
                 style={{
-                  height: "100%",
-                  width: `${(semanaProyeccion / 8) * 100}%`,
-                  background: semanaProyeccion >= 8 ? N.green : N.blue,
+                  flex: 1,
+                  position: "relative",
+                  height: 8,
+                  background: N.border,
                   borderRadius: 5,
-                  transition: "width 0.5s ease",
+                  overflow: "hidden",
                 }}
-              />
-            </div>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 12,
-                fontWeight: 700,
-                color: N.mid,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {semanaProyeccion >= 8
-                ? "Completado"
-                : `+${semanaProyeccion} sem.`}
-            </span>
-            {gtProy !== null && (
+              >
+                {/* Tramo IA (primeras 4 semanas - color lila) */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: 0,
+                    height: "100%",
+                    width: `${Math.min(semanaProyeccion / 8, 0.5) * 100}%`,
+                    background: N.lila,
+                    borderRadius: "5px 0 0 5px",
+                    transition: "width 0.5s ease",
+                  }}
+                />
+                {/* Tramo escenario (semanas 5-8 - color teal/green) */}
+                {semanaProyeccion > 4 && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: "50%",
+                      top: 0,
+                      height: "100%",
+                      width: `${((semanaProyeccion - 4) / 8) * 100}%`,
+                      background: semanaProyeccion >= 8 ? N.green : N.teal,
+                      borderRadius: "0 5px 5px 0",
+                      transition: "width 0.5s ease",
+                    }}
+                  />
+                )}
+                {/* Marcador de división IA/escenario */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "50%",
+                    top: 0,
+                    width: 1,
+                    height: "100%",
+                    background: "rgba(255,255,255,0.6)",
+                  }}
+                />
+              </div>
+
+              {/* Gt proyectado en GRANDE */}
+              {gtProy !== null && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 4,
+                    background: getGtLevel(gtProy).bg,
+                    padding: "3px 10px",
+                    borderRadius: 8,
+                    border: `1px solid ${getGtLevel(gtProy).color}30`,
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 20,
+                      fontWeight: 800,
+                      color: getGtLevel(gtProy).color,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {gtProy.toFixed(3)}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 9,
+                      color: getGtLevel(gtProy).color,
+                      opacity: 0.7,
+                    }}
+                  >
+                    Gₜ
+                  </span>
+                </div>
+              )}
+
               <span
                 style={{
                   fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: getGtLevel(gtProy).color,
-                  fontWeight: 600,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: N.mid,
                   whiteSpace: "nowrap",
                 }}
               >
-                Gt={gtProy.toFixed(3)}
+                {semanaProyeccion >= 8
+                  ? "✓ Completado"
+                  : semanaProyeccion <= 4
+                    ? `🤖 +${semanaProyeccion}/4 IA`
+                    : `⚙️ +${semanaProyeccion}/8 Escenario`}
               </span>
-            )}
-            <button
-              onClick={reiniciarProyeccion}
+
+              <button
+                onClick={reiniciarProyeccion}
+                style={{
+                  padding: "4px 12px",
+                  borderRadius: 100,
+                  background: "transparent",
+                  color: N.muted,
+                  border: `1px solid ${N.border}`,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ↺ Reiniciar
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Leyenda de la barra */}
+        {(proyectandoState || semanaProyeccion > 0) && (
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              paddingLeft: 2,
+            }}
+          >
+            <span
               style={{
-                padding: "4px 12px",
-                borderRadius: 100,
-                background: "transparent",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 10,
                 color: N.muted,
-                border: `1px solid ${N.border}`,
                 fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
               }}
             >
-              ↺ Reiniciar
-            </button>
-          </>
+              <span
+                style={{
+                  width: 10,
+                  height: 4,
+                  background: N.lila,
+                  borderRadius: 2,
+                  display: "inline-block",
+                }}
+              />
+              Sem. 1–4: Predicción IA
+            </span>
+            <span
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 10,
+                color: N.muted,
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              <span
+                style={{
+                  width: 10,
+                  height: 4,
+                  background: N.teal,
+                  borderRadius: 2,
+                  display: "inline-block",
+                }}
+              />
+              Sem. 5–8: Simulación de escenario
+            </span>
+            {semanaActualPlan && (
+              <span
+                style={{
+                  fontSize: 10,
+                  color: N.faint,
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                IC: [{semanaActualPlan.gtMin?.toFixed(2)}–
+                {semanaActualPlan.gtMax?.toFixed(2)}]
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Panel resumen al completar */}
+        {semanaProyeccion >= 8 && semanasProyectadas.length === 8 && (
+          <ResumenProyeccion
+            semanasIA={semanasProyectadas}
+            onReiniciar={reiniciarProyeccion}
+          />
         )}
       </div>
 
@@ -984,19 +1432,41 @@ export default function SimulatorView({
               </Marker>
             ))}
 
+            {/* Focos con color dinámico durante proyección */}
             {focos.map((f, i) => {
               const isSelected = focoSeleccionado === i;
-              const Ff = calcularF(f.factores);
-              const radio = 150 + (f.factores.casos / 500) * 600;
+              const focoProy = focosProy[i];
+              const focoAnterior = focosAnterior[i];
+              const casosActuales = focoProy
+                ? focoProy.factores.casos
+                : f.factores.casos;
+              const casosAnteriores = focoAnterior
+                ? focoAnterior.factores.casos
+                : f.factores.casos;
+              const proyectando = focosProy.length > 0;
+              const subio = casosActuales > casosAnteriores;
+              const Ff = calcularF(focoProy?.factores ?? f.factores);
+              const radio = 150 + (casosActuales / 500) * 600;
               const intensidad = Math.min(1, Ff / 2.5);
+
+              // Color dinámico: rojo si subió, verde si bajó, tema si no proyectando
+              const colorDinamico =
+                proyectando && semanaProyeccion > 0
+                  ? subio
+                    ? N.rose
+                    : N.green
+                  : isSelected
+                    ? N.blue
+                    : theme.primary;
+
               return (
                 <Circle
                   key={i}
                   center={[f.lat, f.lon]}
                   radius={radio}
                   pathOptions={{
-                    color: isSelected ? N.blue : theme.primary,
-                    fillColor: theme.primary,
+                    color: colorDinamico,
+                    fillColor: colorDinamico,
                     fillOpacity: isSelected ? 0.2 : 0.05 + intensidad * 0.18,
                     weight: isSelected ? 2.5 : 1.5,
                     opacity: isSelected ? 1 : 0.5 + intensidad * 0.4,
@@ -1009,14 +1479,31 @@ export default function SimulatorView({
                     },
                   }}
                 >
-                  <Tooltip>
+                  <Tooltip
+                    permanent={proyectando && semanaProyeccion > 0}
+                    direction="top"
+                    offset={[0, (-radio / 111320) * 0.01]}
+                  >
                     <div
                       style={{
                         fontFamily: "'DM Sans',sans-serif",
                         fontSize: 12,
                       }}
                     >
-                      <strong>{f.label}</strong> — {f.factores.casos} casos
+                      <strong>{f.label}</strong>
+                      {proyectando && semanaProyeccion > 0 ? (
+                        <>
+                          {" "}
+                          —{" "}
+                          <span
+                            style={{ color: colorDinamico, fontWeight: 700 }}
+                          >
+                            {casosActuales} casos {subio ? "↑" : "↓"}
+                          </span>
+                        </>
+                      ) : (
+                        <> — {f.factores.casos} casos</>
+                      )}
                       <br />
                       <span style={{ fontSize: 10, color: "#6e7891" }}>
                         F={Ff.toFixed(2)} ·{" "}
@@ -1110,6 +1597,40 @@ export default function SimulatorView({
                 }}
               />
             </div>
+
+            {/* Badge IA */}
+            {modeloIA?.entrenado && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "4px 8px",
+                  background: N.lila + "12",
+                  borderRadius: 6,
+                  border: `1px solid ${N.lila}20`,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: N.lila,
+                    fontFamily: "var(--font-mono)",
+                    fontWeight: 600,
+                  }}
+                >
+                  🤖 Modelo IA activo
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: N.faint,
+                    fontFamily: "var(--font-mono)",
+                    marginTop: 1,
+                  }}
+                >
+                  n={modeloIA.n} · R²={modeloIA.r2.toFixed(2)}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Stats rápidas */}
@@ -1209,7 +1730,6 @@ export default function SimulatorView({
             overflow: "hidden",
           }}
         >
-          {/* Multiplicador F */}
           {!calcMode && (
             <div
               style={{
@@ -1293,7 +1813,6 @@ export default function SimulatorView({
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: "16px 14px" }}>
-            {/* ── Factores ── */}
             {activeTab === "factores" && (
               <div className="fade-in">
                 {focoSeleccionado !== null && (
@@ -1381,7 +1900,6 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── Focos ── */}
             {activeTab === "focos" && (
               <div className="fade-in">
                 {focos.length === 0 ? (
@@ -1406,6 +1924,12 @@ export default function SimulatorView({
                 ) : (
                   focos.map((f, i) => {
                     const isSelected = focoSeleccionado === i;
+                    const focoProy = focosProy[i];
+                    const casosActuales = focoProy
+                      ? focoProy.factores.casos
+                      : f.factores.casos;
+                    const proyectando =
+                      focosProy.length > 0 && semanaProyeccion > 0;
                     return (
                       <div
                         key={i}
@@ -1480,8 +2004,10 @@ export default function SimulatorView({
                           }}
                         >
                           <span>
-                            {f.factores.casos} casos · F=
-                            {calcularF(f.factores).toFixed(2)}
+                            {proyectando
+                              ? `${casosActuales} casos (sem. ${semanaProyeccion})`
+                              : `${f.factores.casos} casos`}{" "}
+                            · F={calcularF(f.factores).toFixed(2)}
                           </span>
                           <span
                             style={{ color: isSelected ? N.blue : N.faint }}
@@ -1496,7 +2022,6 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── Capas ── */}
             {activeTab === "capas" && (
               <div className="fade-in">
                 <SectionLabel>Capas del mapa</SectionLabel>
@@ -1576,7 +2101,6 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── Fórmulas ── */}
             {activeTab === "math" && (
               <div className="fade-in">
                 <SectionLabel>Base matemática del modelo</SectionLabel>
@@ -1586,7 +2110,6 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── Epicentros ── */}
             {activeTab === "criticos" && (
               <div className="fade-in">
                 <SectionLabel>Epicentros detectados</SectionLabel>
@@ -1672,7 +2195,6 @@ export default function SimulatorView({
         </div>
       </div>
 
-      {/* Modal */}
       {mostrarModal && (
         <AgregarRegistroModal
           onGuardar={onAgregarRegistro}
