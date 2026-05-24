@@ -2,16 +2,13 @@ import { DISEASE_THEME, getGtLevel } from "../utils/constants";
 
 const N = {
   bg: "#ffffff",
-  surface: "#f4f6fa",
-  surface2: "#eef2f9",
-  border: "#dde3ee",
-  cyan: "#0ea5e9",
-  blue: "#2563eb",
-  lila: "#8b5cf6",
-  green: "#16a34a",
-  text: "#111827",
-  muted: "#374151",
-  faint: "#9ca3af",
+  surface: "#f7f9fc",
+  border: "#e2e6ef",
+  teal: "#0d9488",
+  blue: "#1d4ed8",
+  text: "#0d1117",
+  muted: "#3d4554",
+  faint: "#adb5c8",
 };
 
 function SimIcon() {
@@ -57,12 +54,88 @@ const NAV = [
   { id: "dashboard", label: "Análisis histórico", Icon: DashIcon },
 ];
 
+// Fila de nivel de alerta con barra de progreso
+function GtBadge({ Gt, level }) {
+  return (
+    <div
+      style={{
+        marginTop: 14,
+        padding: "12px 14px",
+        borderRadius: 10,
+        background: N.surface,
+        border: `1px solid ${level.color}30`,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 9,
+          color: N.faint,
+          fontFamily: "var(--font-mono)",
+          letterSpacing: 1.5,
+          textTransform: "uppercase",
+          marginBottom: 6,
+        }}
+      >
+        Nivel de alerta actual
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        <div
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontWeight: 700,
+            fontSize: 26,
+            color: level.color,
+            lineHeight: 1,
+          }}
+        >
+          {(Gt ?? 0).toFixed(3)}
+        </div>
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 10,
+            fontWeight: 700,
+            color: level.color,
+            background: level.color + "18",
+            padding: "3px 10px",
+            borderRadius: 100,
+            letterSpacing: 0.5,
+            border: `1px solid ${level.color}40`,
+          }}
+        >
+          {level.label}
+        </span>
+      </div>
+      {/* barra de riesgo */}
+      <div style={{ height: 3, background: N.border, borderRadius: 3 }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${Math.min((Gt ?? 0) * 100, 100)}%`,
+            background: level.color,
+            borderRadius: 3,
+            transition: "width 0.4s ease",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Sidebar({
   module,
   onModule,
   disease,
   onDisease,
   currentGt,
+  onExportar,
 }) {
   const theme = DISEASE_THEME[disease];
   const level = getGtLevel(currentGt ?? 0);
@@ -70,20 +143,20 @@ export default function Sidebar({
   return (
     <aside
       style={{
-        width: 260,
+        width: 252,
         height: "100%",
         background: N.bg,
         borderRight: `1px solid ${N.border}`,
         display: "flex",
         flexDirection: "column",
         flexShrink: 0,
-        boxShadow: "2px 0 12px rgba(15,23,42,0.06)",
+        boxShadow: "1px 0 8px rgba(13,17,23,0.05)",
       }}
     >
-      {/* Logo */}
+      {/* Marca */}
       <div
         style={{
-          padding: "20px 20px 16px",
+          padding: "20px 20px 18px",
           borderBottom: `1px solid ${N.border}`,
         }}
       >
@@ -92,21 +165,20 @@ export default function Sidebar({
             display: "flex",
             alignItems: "center",
             gap: 10,
-            marginBottom: 4,
+            marginBottom: 2,
           }}
         >
           <div
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 9,
+              width: 36,
+              height: 36,
+              borderRadius: 10,
               background: `linear-gradient(135deg, ${theme.primary}, ${theme.secondary ?? theme.primary}cc)`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 17,
-              boxShadow: `0 0 16px ${theme.primary}60`,
-              transition: "box-shadow 0.3s",
+              fontSize: 18,
+              boxShadow: `0 4px 14px ${theme.primary}50`,
             }}
           >
             {theme.icon}
@@ -116,7 +188,7 @@ export default function Sidebar({
               style={{
                 fontFamily: "var(--font-display)",
                 fontWeight: 800,
-                fontSize: 19,
+                fontSize: 20,
                 letterSpacing: "-0.5px",
                 color: N.text,
               }}
@@ -132,75 +204,15 @@ export default function Sidebar({
                 textTransform: "uppercase",
               }}
             >
-              Santa Cruz de la Sierra
+              Santa Cruz · Bolivia
             </div>
           </div>
         </div>
-
-        {/* Badge Gt */}
-        <div
-          style={{
-            marginTop: 14,
-            padding: "10px 14px",
-            borderRadius: 10,
-            background: N.surface,
-            border: `1px solid ${level.color}40`,
-            boxShadow: "var(--shadow-sm)",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 9,
-              color: N.muted,
-              fontFamily: "var(--font-mono)",
-              letterSpacing: 1.5,
-              textTransform: "uppercase",
-              marginBottom: 4,
-            }}
-          >
-            Índice de alerta
-          </div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-end",
-              justifyContent: "space-between",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontWeight: 700,
-                fontSize: 24,
-                color: level.color,
-                lineHeight: 1,
-                textShadow: "none",
-              }}
-            >
-              {(currentGt ?? 0).toFixed(3)}
-            </div>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 10,
-                fontWeight: 700,
-                color: level.color,
-                background: level.color + "18",
-                padding: "3px 10px",
-                borderRadius: 100,
-                letterSpacing: 0.5,
-                border: `1px solid ${level.color}50`,
-                boxShadow: `0 0 8px ${level.color}30`,
-              }}
-            >
-              {level.label}
-            </span>
-          </div>
-        </div>
+        <GtBadge Gt={currentGt} level={level} />
       </div>
 
-      {/* Módulos */}
-      <nav style={{ padding: "16px 12px 0" }}>
+      {/* Navegación */}
+      <nav style={{ padding: "16px 10px 0" }}>
         <div
           style={{
             fontSize: 9,
@@ -227,18 +239,16 @@ export default function Sidebar({
                 alignItems: "center",
                 gap: 10,
                 padding: "10px 12px",
-                borderRadius: 10,
-                border: `1px solid ${active ? N.cyan + "40" : "transparent"}`,
+                borderRadius: 9,
+                border: `1px solid ${active ? N.teal + "40" : "transparent"}`,
                 cursor: "pointer",
-                marginBottom: 4,
+                marginBottom: 3,
                 fontFamily: "var(--font-body)",
                 fontSize: 13,
                 fontWeight: active ? 600 : 400,
-                background: active ? N.cyan + "12" : "transparent",
-                color: active ? N.cyan : N.muted,
-                transition: "all 0.15s ease",
-                boxShadow: active ? `0 0 12px ${N.cyan}15` : "none",
-                textShadow: active ? `0 0 8px ${N.cyan}60` : "none",
+                background: active ? N.teal + "10" : "transparent",
+                color: active ? N.teal : N.muted,
+                transition: "all 0.12s ease",
               }}
               onMouseEnter={(e) => {
                 if (!active) e.currentTarget.style.background = N.surface;
@@ -247,7 +257,7 @@ export default function Sidebar({
                 if (!active) e.currentTarget.style.background = "transparent";
               }}
             >
-              <span style={{ color: active ? N.cyan : N.faint }}>
+              <span style={{ color: active ? N.teal : N.faint }}>
                 <Icon />
               </span>
               {label}
@@ -255,11 +265,10 @@ export default function Sidebar({
                 <div
                   style={{
                     marginLeft: "auto",
-                    width: 7,
-                    height: 7,
+                    width: 6,
+                    height: 6,
                     borderRadius: "50%",
-                    background: N.cyan,
-                    boxShadow: "none",
+                    background: N.teal,
                   }}
                 />
               )}
@@ -268,100 +277,72 @@ export default function Sidebar({
         })}
       </nav>
 
-      {/* Enfermedad */}
-      <div
-        style={{
-          padding: "16px 12px 0",
-          borderTop: `1px solid ${N.border}`,
-          marginTop: 12,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 9,
-            color: N.faint,
-            fontFamily: "var(--font-mono)",
-            letterSpacing: 2,
-            textTransform: "uppercase",
-            padding: "0 8px",
-            marginBottom: 8,
-            fontWeight: 700,
-          }}
-        >
-          Enfermedad
-        </div>
-        {["dengue", "influenza"].map((d) => {
-          const t = DISEASE_THEME[d];
-          const active = disease === d;
-          return (
-            <button
-              key={d}
-              onClick={() => onDisease(d)}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: `1px solid ${active ? t.primary + "50" : "transparent"}`,
-                cursor: "pointer",
-                marginBottom: 4,
-                background: active ? t.primary + "12" : "transparent",
-                fontFamily: "var(--font-body)",
-                fontSize: 13,
-                fontWeight: active ? 600 : 400,
-                color: active ? t.primary : N.muted,
-                transition: "all 0.15s ease",
-                boxShadow: active ? `0 0 12px ${t.primary}15` : "none",
-              }}
-              onMouseEnter={(e) => {
-                if (!active) e.currentTarget.style.background = N.surface;
-              }}
-              onMouseLeave={(e) => {
-                if (!active) e.currentTarget.style.background = "transparent";
-              }}
-            >
-              <span style={{ fontSize: 16 }}>{t.icon}</span>
-              <span style={{ textTransform: "capitalize" }}>{t.label}</span>
-              {active && (
-                <div
-                  style={{
-                    marginLeft: "auto",
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: t.primary,
-                    boxShadow: `0 0 8px ${t.primary}`,
-                  }}
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Footer */}
+      {/* Footer: exportar + créditos */}
       <div
         style={{
           marginTop: "auto",
-          padding: "16px 20px",
+          padding: "16px 16px 18px",
           borderTop: `1px solid ${N.border}`,
         }}
       >
+        <button
+          onClick={onExportar}
+          title="Descargar todos los registros como CSV"
+          style={{
+            width: "100%",
+            padding: "9px 14px",
+            borderRadius: 8,
+            border: `1px solid ${N.border}`,
+            background: N.surface,
+            color: N.muted,
+            fontFamily: "var(--font-body)",
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            transition: "all 0.12s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = N.teal;
+            e.currentTarget.style.color = N.teal;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = N.border;
+            e.currentTarget.style.color = N.muted;
+          }}
+        >
+          <svg
+            width={13}
+            height={13}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Exportar datos CSV
+        </button>
         <div
           style={{
             fontSize: 9,
             color: N.faint,
             fontFamily: "var(--font-mono)",
             textAlign: "center",
+            marginTop: 12,
             lineHeight: 1.8,
             letterSpacing: 0.5,
           }}
         >
           TECNO UPSA 2026
           <br />
-          <span style={{ color: N.muted }}>BROTE° v1.0</span>
+          <span style={{ color: "#adb5c8" }}>ODS 3 · Salud</span>
         </div>
       </div>
     </aside>

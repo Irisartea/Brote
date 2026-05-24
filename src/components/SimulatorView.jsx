@@ -26,41 +26,34 @@ import {
   gradDirection,
   angleToCardinal,
   sigmaDengue,
-  sigmaInfluenza,
   fTemp_dengue,
   fHumedad_dengue,
   fLluvia_dengue,
   fVacuna_dengue,
   fAgua,
   fFumigacion,
-  fTemp_inf,
-  fHumedad_inf,
-  fHacinamiento,
-  fVentilacion,
-  fVacuna_inf,
 } from "../utils/mathEngine";
+import AgregarRegistroModal from "./AgregarRegistroModal";
 
 const TILE_URL =
   "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
 const TILE_ATTR = '&copy; <a href="https://carto.com/">CARTO</a>';
 
-// Paleta del simulador — tema claro
 const N = {
-  bg: "#f4f6fa",
+  bg: "#f0f2f7",
   surface: "#ffffff",
-  surface2: "#f8faff",
-  border: "#dde3ee",
-  text: "#111827",
-  mid: "#374151",
-  muted: "#6b7280",
-  faint: "#9ca3af",
-  // acentos funcionales
-  cyan: "#0ea5e9",
-  blue: "#2563eb",
-  lila: "#8b5cf6",
-  green: "#16a34a",
-  orange: "#d97706",
-  red: "#dc2626",
+  surface2: "#f7f9fc",
+  border: "#e2e6ef",
+  text: "#0d1117",
+  mid: "#3d4554",
+  muted: "#6e7891",
+  faint: "#adb5c8",
+  teal: "#0d9488",
+  blue: "#1d4ed8",
+  lila: "#7c3aed",
+  green: "#059669",
+  amber: "#d97706",
+  rose: "#e11d48",
 };
 
 const DEFAULT_FACTORES = {
@@ -70,10 +63,30 @@ const DEFAULT_FACTORES = {
   breeding: 0.4,
   intervention: 0.2,
   vacuna: 0,
-  hacinamiento: 0.5,
-  ventilacion: 0.3,
   casos: 20,
 };
+
+// ── Factor ambiental compuesto ─────────────────────────────────────────────
+// Todos los factores combinados en un solo multiplicador para dengue
+function calcularF(factores) {
+  return (
+    fTemp_dengue(factores.temp) *
+    fHumedad_dengue(factores.humidity) *
+    fLluvia_dengue(factores.lluvia) *
+    fAgua(factores.breeding) *
+    fFumigacion(factores.intervention) *
+    fVacuna_dengue(factores.vacuna)
+  );
+}
+
+function calcularSigma(factores, sigmaBase) {
+  return sigmaDengue(
+    sigmaBase,
+    factores.breeding,
+    factores.lluvia / 200,
+    factores.intervention,
+  );
+}
 
 function sigmaDelDistritoMasCercano(lat, lon) {
   let minDist = Infinity,
@@ -88,39 +101,7 @@ function sigmaDelDistritoMasCercano(lat, lon) {
   return Math.min(sigmaCercano, 0.004);
 }
 
-function calcularF(disease, factores) {
-  if (disease === "dengue") {
-    return (
-      fTemp_dengue(factores.temp) *
-      fHumedad_dengue(factores.humidity) *
-      fLluvia_dengue(factores.lluvia) *
-      fAgua(factores.breeding) *
-      fFumigacion(factores.intervention) *
-      fVacuna_dengue(factores.vacuna)
-    );
-  }
-  return (
-    fTemp_inf(factores.temp) *
-    fHumedad_inf(factores.humidity) *
-    fHacinamiento(factores.hacinamiento) *
-    fVentilacion(factores.ventilacion) *
-    fVacuna_inf(factores.vacuna)
-  );
-}
-
-function calcularSigma(disease, factores, sigmaBase) {
-  if (disease === "dengue") {
-    return sigmaDengue(
-      sigmaBase,
-      factores.breeding,
-      factores.lluvia / 200,
-      factores.intervention,
-    );
-  }
-  return sigmaInfluenza(sigmaBase, factores.hacinamiento, factores.ventilacion);
-}
-
-function ClickHandler({ addingFocus, onAdd, foci, disease, theme }) {
+function ClickHandler({ addingFocus, onAdd, foci, theme }) {
   useMapEvents({
     click(e) {
       const { lat, lng: lon } = e.latlng;
@@ -135,17 +116,13 @@ function ClickHandler({ addingFocus, onAdd, foci, disease, theme }) {
         .setLatLng(e.latlng)
         .setContent(
           `
-          <div style="font-family:'Space Grotesk',sans-serif">
-            <div style="font-size:10px;color:#6b7280;margin-bottom:4px">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
-            <div style="font-size:22px;font-weight:700;color:${theme.primary};font-family:'JetBrains Mono',monospace">
-              R = ${r.toFixed(5)}
+          <div style="font-family:'DM Sans',sans-serif">
+            <div style="font-size:10px;color:#6e7891;margin-bottom:4px">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
+            <div style="font-size:20px;font-weight:700;color:${theme.primary};font-family:'DM Mono',monospace">
+              Riesgo: ${r.toFixed(4)}
             </div>
-            <div style="display:flex;gap:12px;font-size:11px;color:#6b7280;font-family:'JetBrains Mono',monospace;margin-top:6px">
-              <span>|∇R| = ${mag.toFixed(5)}</span>
-              <span>θ = ${theta.toFixed(1)}°</span>
-            </div>
-            <div style="margin-top:6px;font-size:11px;color:#374151">
-              Dirección: <strong style="color:${theme.primary}">${angleToCardinal(theta)}</strong>
+            <div style="font-size:11px;color:#6e7891;font-family:'DM Mono',monospace;margin-top:6px">
+              Expansión: ${mag.toFixed(5)} · Dir: ${angleToCardinal(theta)}
             </div>
           </div>`,
         )
@@ -155,12 +132,13 @@ function ClickHandler({ addingFocus, onAdd, foci, disease, theme }) {
   return null;
 }
 
-// ── Slider rediseñado ──────────────────────────────────────────────────
+// ── Slider ─────────────────────────────────────────────────────────────────
 function Slider({
   label,
+  sublabel,
   value,
   onChange,
-  color = N.cyan,
+  color = N.teal,
   min = 0,
   max = 1,
   step = 0.01,
@@ -168,18 +146,25 @@ function Slider({
 }) {
   const pct = ((value - min) / (max - min)) * 100;
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ marginBottom: 18 }}>
       <div
         style={{
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 8,
+          alignItems: "flex-start",
+          marginBottom: 7,
         }}
       >
-        <span style={{ fontSize: 12, color: N.mid, fontWeight: 500 }}>
-          {label}
-        </span>
+        <div>
+          <span style={{ fontSize: 12, color: N.mid, fontWeight: 500 }}>
+            {label}
+          </span>
+          {sublabel && (
+            <div style={{ fontSize: 10, color: N.faint, marginTop: 1 }}>
+              {sublabel}
+            </div>
+          )}
+        </div>
         <span
           style={{
             fontFamily: "var(--font-mono)",
@@ -189,7 +174,8 @@ function Slider({
             background: color + "12",
             padding: "2px 9px",
             borderRadius: 6,
-            border: `1px solid ${color}30`,
+            border: `1px solid ${color}28`,
+            whiteSpace: "nowrap",
           }}
         >
           {Number.isInteger(step) || step >= 1
@@ -201,9 +187,9 @@ function Slider({
       <div
         style={{
           position: "relative",
-          height: 4,
+          height: 5,
           background: N.border,
-          borderRadius: 4,
+          borderRadius: 5,
         }}
       >
         <div
@@ -213,9 +199,9 @@ function Slider({
             top: 0,
             height: "100%",
             width: `${pct}%`,
-            borderRadius: 4,
+            borderRadius: 5,
             background: color,
-            transition: "width 0.1s",
+            transition: "width 0.08s",
           }}
         />
         <input
@@ -243,12 +229,12 @@ function Slider({
             left: `${pct}%`,
             top: "50%",
             transform: "translate(-50%,-50%)",
-            width: 14,
-            height: 14,
+            width: 15,
+            height: 15,
             borderRadius: "50%",
             background: "white",
             border: `2px solid ${color}`,
-            boxShadow: `0 1px 4px rgba(0,0,0,0.12)`,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.12)",
             pointerEvents: "none",
           }}
         />
@@ -292,7 +278,6 @@ function MathCard({ title, formula, explanation }) {
         border: `1px solid ${N.border}`,
         overflow: "hidden",
         background: N.surface,
-        boxShadow: "var(--shadow-sm)",
       }}
     >
       <button
@@ -331,20 +316,20 @@ function MathCard({ title, formula, explanation }) {
           <div
             style={{
               fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              color: N.cyan,
-              background: "#f0f9ff",
+              fontSize: 11,
+              color: N.teal,
+              background: "#f0fdfa",
               padding: "10px 12px",
               borderRadius: 6,
               marginBottom: 8,
-              border: `1px solid #bae6fd`,
+              border: "1px solid #99f6e4",
               whiteSpace: "pre-wrap",
             }}
           >
             {formula}
           </div>
           <p
-            style={{ fontSize: 12, color: N.muted, lineHeight: 1.6, margin: 0 }}
+            style={{ fontSize: 11, color: N.muted, lineHeight: 1.6, margin: 0 }}
           >
             {explanation}
           </p>
@@ -380,113 +365,68 @@ function StatRow({ label, value, color = N.mid }) {
   );
 }
 
-function FactoresPanel({
-  disease,
-  factores,
-  onChange,
-  theme,
-  showCasos = false,
-}) {
-  const isDengue = disease === "dengue";
+function FactoresPanel({ factores, onChange, theme, showCasos = false }) {
   return (
     <>
-      {isDengue ? (
-        <>
-          <SectionLabel icon="🌡️">Condiciones del entorno</SectionLabel>
-          <Slider
-            label="Temperatura"
-            value={factores.temp}
-            min={15}
-            max={40}
-            unit="°C"
-            color={N.orange}
-            onChange={(v) => onChange({ ...factores, temp: v })}
-          />
-          <Slider
-            label="Humedad"
-            value={factores.humidity}
-            min={30}
-            max={100}
-            unit="%"
-            color={N.cyan}
-            onChange={(v) => onChange({ ...factores, humidity: v })}
-          />
-          <Slider
-            label="Lluvia"
-            value={factores.lluvia}
-            min={0}
-            max={200}
-            unit=" mm"
-            color={N.blue}
-            onChange={(v) => onChange({ ...factores, lluvia: v })}
-          />
-          <Slider
-            label="Agua estancada / criaderos"
-            value={factores.breeding}
-            color={N.lila}
-            onChange={(v) => onChange({ ...factores, breeding: v })}
-          />
-          <SectionLabel icon="🏥">Medidas de control</SectionLabel>
-          <Slider
-            label="Fumigación"
-            value={factores.intervention}
-            color={N.green}
-            onChange={(v) => onChange({ ...factores, intervention: v })}
-          />
-          <Slider
-            label="Vacunación de la población"
-            value={factores.vacuna}
-            color="#8b5cf6"
-            onChange={(v) => onChange({ ...factores, vacuna: v })}
-          />
-        </>
-      ) : (
-        <>
-          <SectionLabel icon="🌡️">Condiciones del entorno</SectionLabel>
-          <Slider
-            label="Temperatura"
-            value={factores.temp}
-            min={5}
-            max={35}
-            unit="°C"
-            color={N.orange}
-            onChange={(v) => onChange({ ...factores, temp: v })}
-          />
-          <Slider
-            label="Humedad"
-            value={factores.humidity}
-            min={30}
-            max={100}
-            unit="%"
-            color={N.cyan}
-            onChange={(v) => onChange({ ...factores, humidity: v })}
-          />
-          <SectionLabel icon="🏘️">Condiciones sociales</SectionLabel>
-          <Slider
-            label="Aglomeración de personas"
-            value={factores.hacinamiento}
-            color={N.orange}
-            onChange={(v) => onChange({ ...factores, hacinamiento: v })}
-          />
-          <Slider
-            label="Ventilación de espacios"
-            value={factores.ventilacion}
-            color={N.green}
-            onChange={(v) => onChange({ ...factores, ventilacion: v })}
-          />
-          <Slider
-            label="Vacunación de la población"
-            value={factores.vacuna}
-            color="#8b5cf6"
-            onChange={(v) => onChange({ ...factores, vacuna: v })}
-          />
-        </>
-      )}
+      <SectionLabel icon="🌡️">Clima y ambiente</SectionLabel>
+      <Slider
+        label="Temperatura"
+        sublabel="Afecta al mosquito vector"
+        value={factores.temp}
+        min={15}
+        max={40}
+        unit="°C"
+        color={N.amber}
+        onChange={(v) => onChange({ ...factores, temp: v })}
+      />
+      <Slider
+        label="Humedad ambiental"
+        sublabel="Favorece la supervivencia del mosquito"
+        value={factores.humidity}
+        min={30}
+        max={100}
+        unit="%"
+        color={N.blue}
+        onChange={(v) => onChange({ ...factores, humidity: v })}
+      />
+      <Slider
+        label="Lluvia semanal"
+        sublabel="Crea criaderos de mosquitos"
+        value={factores.lluvia}
+        min={0}
+        max={200}
+        unit=" mm"
+        color={N.teal}
+        onChange={(v) => onChange({ ...factores, lluvia: v })}
+      />
+      <Slider
+        label="Agua estancada"
+        sublabel="Lugares donde se reproduce el mosquito"
+        value={factores.breeding}
+        color={N.lila}
+        onChange={(v) => onChange({ ...factores, breeding: v })}
+      />
+      <SectionLabel icon="🏥">Control sanitario</SectionLabel>
+      <Slider
+        label="Fumigación"
+        sublabel="Reduce la cantidad de mosquitos"
+        value={factores.intervention}
+        color={N.green}
+        onChange={(v) => onChange({ ...factores, intervention: v })}
+      />
+      <Slider
+        label="Vacunación"
+        sublabel="Porcentaje de la población vacunada"
+        value={factores.vacuna}
+        color={N.blue}
+        onChange={(v) => onChange({ ...factores, vacuna: v })}
+      />
       {showCasos && (
         <>
           <SectionLabel icon="📍">Casos en esta zona</SectionLabel>
           <Slider
             label="Casos reportados"
+            sublabel="Número inicial de contagios"
             value={factores.casos}
             min={1}
             max={500}
@@ -500,17 +440,85 @@ function FactoresPanel({
   );
 }
 
+function WeekSelector({ datos, selectedIdx, onSelectIdx }) {
+  if (!datos?.length) return null;
+  const años = [...new Set(datos.map((r) => r.año))].sort();
+  const añoActual = datos[selectedIdx]?.año;
+  const seActual = datos[selectedIdx]?.se;
+  const semanasDelAño = datos
+    .filter((r) => r.año === añoActual)
+    .map((r) => r.se);
+  const selStyle = {
+    padding: "5px 10px",
+    borderRadius: 7,
+    border: `1px solid ${N.border}`,
+    background: "white",
+    fontFamily: "var(--font-mono)",
+    fontSize: 12,
+    fontWeight: 600,
+    color: N.text,
+    cursor: "pointer",
+    outline: "none",
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <select
+        value={añoActual}
+        style={selStyle}
+        onChange={(e) => {
+          const idx = datos.findIndex((r) => r.año === +e.target.value);
+          if (idx >= 0) onSelectIdx(idx);
+        }}
+      >
+        {años.map((a) => (
+          <option key={a} value={a}>
+            {a}
+          </option>
+        ))}
+      </select>
+      <select
+        value={seActual}
+        style={selStyle}
+        onChange={(e) => {
+          const idx = datos.findIndex(
+            (r) => r.año === añoActual && r.se === +e.target.value,
+          );
+          if (idx >= 0) onSelectIdx(idx);
+        }}
+      >
+        {semanasDelAño.map((s) => (
+          <option key={s} value={s}>
+            Semana {s}
+          </option>
+        ))}
+      </select>
+      <span
+        style={{ fontSize: 11, color: N.muted, fontFamily: "var(--font-mono)" }}
+      >
+        {datos[selectedIdx]?.confirmados?.toLocaleString()} casos
+      </span>
+    </div>
+  );
+}
+
+// ── CONSTANTE DE ESCALA: hace que Ai tenga magnitud visible en el canvas ──
+// Sin esto los valores son ~0.0001 y la normalización los aplana visualmente
+const AI_ESCALA = 12;
+
 export default function SimulatorView({
   disease,
   datos,
   currentGt,
   selectedIdx,
   onSelectIdx,
+  onAgregarRegistro,
 }) {
   const theme = DISEASE_THEME[disease];
   const level = getGtLevel(currentGt ?? 0);
+
   const [calcMode, setCalcMode] = useState(false);
   const [addingFocus, setAddingFocus] = useState(false);
+  const [mostrarModal, setMostrarModal] = useState(false);
   const [layers, setLayers] = useState({
     heatmap: true,
     gradient: false,
@@ -524,73 +532,74 @@ export default function SimulatorView({
   const [focos, setFocos] = useState([]);
   const [focoSeleccionado, setFocoSeleccionado] = useState(null);
 
-  // ── Proyección animada ──────────────────────────────────────────────
-  // semanaProyeccion: 0 = estado base, 1-8 = semanas proyectadas
-  // gtProy: multiplicador de Gₜ que crece o decrece con beta
-  // El heatmap usa gtProy para escalar las intensidades de TODAS las zonas
-  const [proyectando, setProyectando] = useState(false);
+  // ── Proyección ─────────────────────────────────────────────────────────────
   const [semanaProyeccion, setSemanaProyeccion] = useState(0);
-  const [gtProy, setGtProy] = useState(null); // null = sin proyección
+  const [gtProy, setGtProy] = useState(null);
   const [focosProy, setFocosProy] = useState([]);
+  const proyectandoRef = useRef(false);
   const intervalRef = useRef(null);
 
+  // Usamos ref para proyectando para evitar la race condition del useEffect
+  const [proyectandoState, setProyectandoState] = useState(false);
+
   const iniciarProyeccion = useCallback(() => {
+    if (proyectandoRef.current) return;
+    proyectandoRef.current = true;
+    setProyectandoState(true);
     setSemanaProyeccion(0);
-    setGtProy(Math.max(0.01, currentGt ?? 0.01));
+    const gtInicial = Math.max(0.05, currentGt ?? 0.05);
+    setGtProy(gtInicial);
     setFocosProy(focos.map((f) => ({ ...f })));
-    setProyectando(true);
-  }, [focos, currentGt]);
+
+    let semana = 0;
+    let gtActual = gtInicial;
+    let focosActuales = focos.map((f) => ({ ...f }));
+
+    const vac = factoresGlobales.vacuna ?? 0;
+    const fum = factoresGlobales.intervention ?? 0;
+    // beta > 1 = expansión, beta < 1 = contracción
+    const beta = 1.18 * (1 - 0.61 * vac) * (1 - 0.35 * fum);
+
+    intervalRef.current = setInterval(() => {
+      semana += 1;
+      gtActual = Math.min(1, Math.max(0.001, gtActual * beta));
+      focosActuales = focosActuales.map((f) => {
+        const betaF =
+          1.18 *
+          (1 - 0.61 * (f.factores.vacuna ?? 0)) *
+          (1 - 0.35 * (f.factores.intervention ?? 0));
+        return {
+          ...f,
+          factores: {
+            ...f.factores,
+            casos: Math.max(1, Math.round(f.factores.casos * betaF)),
+          },
+        };
+      });
+
+      setGtProy(gtActual);
+      setFocosProy([...focosActuales]);
+      setSemanaProyeccion(semana);
+
+      if (semana >= 8) {
+        clearInterval(intervalRef.current);
+        proyectandoRef.current = false;
+        setProyectandoState(false);
+      }
+    }, 800);
+  }, [focos, currentGt, factoresGlobales]);
 
   const reiniciarProyeccion = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    setProyectando(false);
+    clearInterval(intervalRef.current);
+    proyectandoRef.current = false;
+    setProyectandoState(false);
     setSemanaProyeccion(0);
     setGtProy(null);
     setFocosProy([]);
   }, []);
 
-  useEffect(() => {
-    if (!proyectando) return;
-    intervalRef.current = setInterval(() => {
-      setSemanaProyeccion((prev) => {
-        const next = prev + 1;
-        if (next > 8) {
-          clearInterval(intervalRef.current);
-          setProyectando(false);
-          return 8;
-        }
-        // Beta: tasa de reproducción efectiva modulada por factores globales
-        // β = 1.18 × (1 - 0.61×vacuna) × (1 - 0.35×fumigación)
-        // β > 1 → expansión, β < 1 → contracción
-        const vac = factoresGlobales.vacuna ?? 0;
-        const fum = factoresGlobales.intervention ?? 0;
-        const beta = 1.18 * (1 - 0.61 * vac) * (1 - 0.35 * fum);
-
-        // Actualizar Gₜ proyectado — escala el campo de riesgo completo
-        setGtProy((prevGt) => {
-          const nuevoGt = Math.min(1, Math.max(0.001, prevGt * beta));
-          return nuevoGt;
-        });
-
-        // Actualizar focos hipotéticos con su propia vacunación/fumigación
-        setFocosProy((prevFocos) =>
-          prevFocos.map((f) => {
-            const vF = f.factores.vacuna ?? 0;
-            const fumF = f.factores.intervention ?? 0;
-            const betaF = 1.18 * (1 - 0.61 * vF) * (1 - 0.35 * fumF);
-            const nuevosCasos = Math.max(
-              1,
-              Math.round(f.factores.casos * betaF),
-            );
-            return { ...f, factores: { ...f.factores, casos: nuevosCasos } };
-          }),
-        );
-
-        return next;
-      });
-    }, 900);
-    return () => clearInterval(intervalRef.current);
-  }, [proyectando, factoresGlobales]);
+  // Limpiar al desmontar
+  useEffect(() => () => clearInterval(intervalRef.current), []);
 
   const toggleLayer = (k) => setLayers((l) => ({ ...l, [k]: !l[k] }));
 
@@ -600,7 +609,7 @@ export default function SimulatorView({
       const nuevoFoco = {
         lat,
         lon,
-        label: `Foco ${focos.length + 1}`,
+        label: `Zona ${focos.length + 1}`,
         factores: { ...factoresGlobales },
         sigmaBase: sigmaDelDistritoMasCercano(lat, lon),
       };
@@ -635,26 +644,33 @@ export default function SimulatorView({
     [focoSeleccionado, updateFocoFactores],
   );
 
+  // ── fociCalc: el corazón del modelo ────────────────────────────────────────
+  // FIX: AI_ESCALA asegura que los valores sean visibles en el canvas
+  // FIX: Fg modifica Ai de forma que el mapa cambie visiblemente al mover sliders
   const fociCalc = useMemo(() => {
-    // Durante proyección usamos gtProy (Gₜ que evoluciona semana a semana)
-    // Esto hace que el heatmap de TODAS las zonas base se expanda/contraiga
     const GtBase = gtProy !== null ? gtProy : Math.max(0.01, currentGt ?? 0.01);
-    const Fg = calcularF(disease, factoresGlobales);
+    const Fg = calcularF(factoresGlobales);
+
     const zonas = calcularIntensidades(GtBase);
     const baseZonas = zonas.map((z) => ({
       lat: z.lat,
       lon: z.lon,
-      Ai: z.Ai * Fg,
-      sigma: calcularSigma(disease, factoresGlobales, z.sigma),
+      // AI_ESCALA amplifica para que el canvas lo detecte
+      // Fg multiplica directamente → mover sliders cambia el mapa
+      Ai: z.Ai * Fg * AI_ESCALA,
+      sigma: calcularSigma(factoresGlobales, z.sigma),
       nombre: z.nombre,
       tipo: "base",
     }));
-    // Focos: usar versión proyectada si existe, si no la normal
+
     const focosSource = focosProy.length > 0 ? focosProy : focos;
     const focosHip = focosSource.map((f) => {
-      const Ff = calcularF(disease, f.factores);
-      const sigF = calcularSigma(disease, f.factores, f.sigmaBase ?? 0.006);
-      const Ai = (f.factores.casos / 1453549) * 100000 * Ff * GtBase * 0.024;
+      const Ff = calcularF(f.factores);
+      const sigF = calcularSigma(f.factores, f.sigmaBase ?? 0.006);
+      // Intensidad del foco: casos × factor ambiental × escala
+      // Normalizado por población total de SCZ
+      const Ai =
+        (f.factores.casos / 1453549) * 100000 * Ff * GtBase * AI_ESCALA * 0.3;
       return {
         lat: f.lat,
         lon: f.lon,
@@ -664,28 +680,28 @@ export default function SimulatorView({
         tipo: "foco",
       };
     });
+
     return [...baseZonas, ...focosHip];
   }, [disease, currentGt, factoresGlobales, focos, focosProy, gtProy]);
+
+  const Fcompuesto = calcularF(factoresActivos);
 
   const tabs = calcMode
     ? [
         { id: "capas", label: "Visualización" },
-        { id: "math", label: "Modelo matemático" },
-        { id: "criticos", label: "Puntos críticos" },
+        { id: "math", label: "Fórmulas" },
+        { id: "criticos", label: "Epicentros" },
       ]
     : [
         {
           id: "factores",
           label:
             focoSeleccionado !== null
-              ? `Foco ${focoSeleccionado + 1}`
+              ? `Zona ${focoSeleccionado + 1}`
               : "Factores",
         },
         { id: "focos", label: "Zonas de brote" },
       ];
-
-  // Factor F compuesto para mostrar en el panel
-  const Fcompuesto = calcularF(disease, factoresActivos);
 
   return (
     <div
@@ -696,7 +712,7 @@ export default function SimulatorView({
         overflow: "hidden",
       }}
     >
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div
         style={{
           height: 54,
@@ -704,96 +720,29 @@ export default function SimulatorView({
           borderBottom: `1px solid ${N.border}`,
           display: "flex",
           alignItems: "center",
-          padding: "0 20px",
-          gap: 12,
+          padding: "0 16px",
+          gap: 10,
           flexShrink: 0,
-          boxShadow: "0 1px 4px rgba(15,23,42,0.06)",
+          boxShadow: "0 1px 4px rgba(13,17,23,0.05)",
         }}
       >
         <h1
           style={{
             fontFamily: "var(--font-display)",
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: 700,
             color: N.text,
-            flex: 1,
             letterSpacing: "-0.2px",
           }}
         >
-          Simulador de Riesgo Espacial
+          Mapa de riesgo
         </h1>
-
-        {/* Selector Año + Semana */}
-        {datos?.length > 0 &&
-          (() => {
-            const años = [...new Set(datos.map((r) => r.año))].sort();
-            const añoActual = datos[selectedIdx]?.año;
-            const seActual = datos[selectedIdx]?.se;
-            const semanasDelAño = datos
-              .filter((r) => r.año === añoActual)
-              .map((r) => r.se);
-            return (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <select
-                  value={añoActual}
-                  onChange={(e) => {
-                    const año = +e.target.value;
-                    const idx = datos.findIndex((r) => r.año === año);
-                    if (idx >= 0) onSelectIdx(idx);
-                  }}
-                  style={{
-                    padding: "5px 8px",
-                    borderRadius: 8,
-                    border: `1px solid ${N.border}`,
-                    background: "white",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: N.text,
-                    cursor: "pointer",
-                    outline: "none",
-                  }}
-                >
-                  {años.map((a) => (
-                    <option key={a} value={a}>
-                      {a}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={seActual}
-                  onChange={(e) => {
-                    const se = +e.target.value;
-                    const idx = datos.findIndex(
-                      (r) => r.año === añoActual && r.se === se,
-                    );
-                    if (idx >= 0) onSelectIdx(idx);
-                  }}
-                  style={{
-                    padding: "5px 8px",
-                    borderRadius: 8,
-                    border: `1px solid ${N.border}`,
-                    background: "white",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: N.text,
-                    cursor: "pointer",
-                    outline: "none",
-                  }}
-                >
-                  {semanasDelAño.map((s) => (
-                    <option key={s} value={s}>
-                      Semana {s}
-                    </option>
-                  ))}
-                </select>
-                <span style={{ fontSize: 11, color: N.muted }}>
-                  {datos[selectedIdx]?.confirmados?.toLocaleString()} casos
-                </span>
-              </div>
-            );
-          })()}
+        <div style={{ flex: 1 }} />
+        <WeekSelector
+          datos={datos}
+          selectedIdx={selectedIdx}
+          onSelectIdx={onSelectIdx}
+        />
 
         {/* Badge nivel */}
         <div
@@ -801,7 +750,7 @@ export default function SimulatorView({
             display: "flex",
             alignItems: "center",
             gap: 6,
-            padding: "5px 14px",
+            padding: "5px 12px",
             borderRadius: 100,
             background: level.bg,
             border: `1px solid ${level.color}40`,
@@ -809,8 +758,8 @@ export default function SimulatorView({
         >
           <div
             style={{
-              width: 7,
-              height: 7,
+              width: 6,
+              height: 6,
               borderRadius: "50%",
               background: level.color,
               animation: "blink 1.5s ease-in-out infinite",
@@ -829,11 +778,41 @@ export default function SimulatorView({
           </span>
         </div>
 
-        {/* Modo Cálculo */}
+        {/* Nuevo registro */}
+        <button
+          onClick={() => setMostrarModal(true)}
+          style={{
+            padding: "6px 14px",
+            borderRadius: 8,
+            border: `1px solid ${N.teal}`,
+            background: "white",
+            color: N.teal,
+            fontFamily: "var(--font-body)",
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            transition: "all 0.12s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = N.teal;
+            e.currentTarget.style.color = "white";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "white";
+            e.currentTarget.style.color = N.teal;
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span> Nuevo registro
+        </button>
+
+        {/* Modo matemático */}
         <button
           onClick={() => setCalcMode(!calcMode)}
           style={{
-            padding: "6px 16px",
+            padding: "6px 14px",
             borderRadius: 8,
             border: `1px solid ${calcMode ? N.lila : N.border}`,
             background: calcMode ? N.lila : "white",
@@ -842,169 +821,151 @@ export default function SimulatorView({
             fontSize: 11,
             fontWeight: 600,
             cursor: "pointer",
-            letterSpacing: 0.5,
-            transition: "all 0.14s",
-            boxShadow: calcMode ? "0 2px 8px rgba(139,92,246,0.25)" : "none",
+            transition: "all 0.12s",
+            boxShadow: calcMode ? "0 2px 8px rgba(124,58,237,0.25)" : "none",
           }}
         >
-          ∫ Ver cálculo matemático
+          ∫ Modo matemático
         </button>
       </div>
 
-      {/* ── Barra de proyección ──────────────────────────────────────── */}
-      {
-        <div
+      {/* ── Barra proyección ─────────────────────────────────────────────────── */}
+      <div
+        style={{
+          background: "white",
+          borderBottom: `1px solid ${N.border}`,
+          padding: "7px 16px",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexShrink: 0,
+        }}
+      >
+        <span
           style={{
-            background: "white",
-            borderBottom: `1px solid ${N.border}`,
-            padding: "8px 16px",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            flexShrink: 0,
+            fontSize: 12,
+            color: N.mid,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
           }}
         >
-          <span
+          Proyección 8 semanas
+        </span>
+        {!proyectandoState && semanaProyeccion === 0 && (
+          <button
+            onClick={iniciarProyeccion}
             style={{
-              fontSize: 12,
-              color: N.mid,
-              fontWeight: 600,
+              padding: "4px 14px",
+              borderRadius: 100,
+              background: N.blue,
+              color: "white",
+              border: "none",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
               whiteSpace: "nowrap",
+              boxShadow: "0 2px 6px rgba(29,78,216,0.3)",
             }}
           >
-            Proyección 8 semanas
-          </span>
-          {!proyectando && semanaProyeccion === 0 && (
-            <button
-              onClick={iniciarProyeccion}
+            ▶ Simular expansión
+          </button>
+        )}
+        {(proyectandoState || semanaProyeccion > 0) && (
+          <>
+            <div
               style={{
-                padding: "5px 16px",
-                borderRadius: 100,
-                background: N.blue,
-                color: "white",
-                border: "none",
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-                boxShadow: "0 2px 8px rgba(37,99,235,0.3)",
+                flex: 1,
+                height: 5,
+                background: N.border,
+                borderRadius: 5,
               }}
             >
-              ▶ Iniciar proyección
-            </button>
-          )}
-          {(proyectando || semanaProyeccion > 0) && (
-            <>
               <div
                 style={{
-                  flex: 1,
-                  height: 6,
-                  background: N.border,
-                  borderRadius: 4,
+                  height: "100%",
+                  width: `${(semanaProyeccion / 8) * 100}%`,
+                  background: semanaProyeccion >= 8 ? N.green : N.blue,
+                  borderRadius: 5,
+                  transition: "width 0.5s ease",
                 }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${(semanaProyeccion / 8) * 100}%`,
-                    background: semanaProyeccion >= 8 ? N.green : N.blue,
-                    borderRadius: 4,
-                    transition: "width 0.6s ease",
-                  }}
-                />
-              </div>
+              />
+            </div>
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                fontWeight: 700,
+                color: N.mid,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {semanaProyeccion >= 8
+                ? "Completado"
+                : `+${semanaProyeccion} sem.`}
+            </span>
+            {gtProy !== null && (
               <span
                 style={{
                   fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: N.mid,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {semanaProyeccion >= 8
-                  ? "Semana 8 — completado"
-                  : `Semana +${semanaProyeccion}`}
-              </span>
-              <button
-                onClick={reiniciarProyeccion}
-                style={{
-                  padding: "5px 14px",
-                  borderRadius: 100,
-                  background: "transparent",
-                  color: N.muted,
-                  border: `1px solid ${N.border}`,
-                  fontFamily: "var(--font-mono)",
                   fontSize: 11,
-                  cursor: "pointer",
+                  color: getGtLevel(gtProy).color,
+                  fontWeight: 600,
                   whiteSpace: "nowrap",
                 }}
               >
-                ↺ Reiniciar
-              </button>
-            </>
-          )}
-        </div>
-      }
-
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* ── Mapa ─────────────────────────────────────────────────────── */}
-        <div style={{ flex: 1, position: "relative" }}>
-          {disease === "influenza" && (
-            <div
+                Gt={gtProy.toFixed(3)}
+              </span>
+            )}
+            <button
+              onClick={reiniciarProyeccion}
               style={{
-                position: "absolute",
-                top: 12,
-                left: "50%",
-                transform: "translateX(-50%)",
-                zIndex: 1001,
-                background: "rgba(255,255,255,0.95)",
-                backdropFilter: "blur(8px)",
-                border: `1px solid ${N.lila}40`,
-                borderRadius: 8,
-                padding: "7px 16px",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                boxShadow: "var(--shadow-md)",
+                padding: "4px 12px",
+                borderRadius: 100,
+                background: "transparent",
+                color: N.muted,
+                border: `1px solid ${N.border}`,
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
               }}
             >
-              <span style={{ fontSize: 14 }}>🤧</span>
-              <span style={{ fontSize: 11, color: N.mid }}>
-                Simulador activo — datos epidemiológicos de influenza pendientes
-              </span>
-            </div>
-          )}
+              ↺ Reiniciar
+            </button>
+          </>
+        )}
+      </div>
 
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* ── Mapa ──────────────────────────────────────────────────────────── */}
+        <div style={{ flex: 1, position: "relative" }}>
           <MapContainer
             center={SCZ_CENTER}
             zoom={SCZ_ZOOM}
             style={{ width: "100%", height: "100%" }}
           >
             <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
-
             {SCZ_ANILLOS.map((a, i) => (
               <Circle
                 key={a.name}
                 center={SCZ_CENTER}
                 radius={a.radius * 111320}
                 pathOptions={{
-                  color: `rgba(14,165,233,${0.12 + i * 0.04})`,
+                  color: `rgba(13,148,136,${0.1 + i * 0.03})`,
                   weight: 1,
                   dashArray: "5 6",
                   fillOpacity: 0,
                 }}
               />
             ))}
-
             {SCZ_LANDMARKS.map((lm) => (
               <Marker
                 key={lm.name}
                 position={[lm.lat, lm.lon]}
                 icon={L.divIcon({
                   className: "",
-                  html: `<div style="background:rgba(255,255,255,0.95);border:1px solid #dde3ee;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(15,23,42,0.12)">${lm.icon}</div>`,
+                  html: `<div style="background:rgba(255,255,255,0.96);border:1px solid #e2e6ef;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 8px rgba(13,17,23,0.10)">${lm.icon}</div>`,
                   iconSize: [28, 28],
                   iconAnchor: [14, 14],
                 })}
@@ -1012,7 +973,7 @@ export default function SimulatorView({
                 <Tooltip direction="top" offset={[0, -16]} opacity={0.97}>
                   <span
                     style={{
-                      fontFamily: "'Space Grotesk',sans-serif",
+                      fontFamily: "'DM Sans',sans-serif",
                       fontSize: 12,
                       fontWeight: 600,
                     }}
@@ -1025,7 +986,7 @@ export default function SimulatorView({
 
             {focos.map((f, i) => {
               const isSelected = focoSeleccionado === i;
-              const Ff = calcularF(disease, f.factores);
+              const Ff = calcularF(f.factores);
               const radio = 150 + (f.factores.casos / 500) * 600;
               const intensidad = Math.min(1, Ff / 2.5);
               return (
@@ -1051,15 +1012,15 @@ export default function SimulatorView({
                   <Tooltip>
                     <div
                       style={{
-                        fontFamily: "'Space Grotesk',sans-serif",
+                        fontFamily: "'DM Sans',sans-serif",
                         fontSize: 12,
                       }}
                     >
                       <strong>{f.label}</strong> — {f.factores.casos} casos
                       <br />
-                      <span style={{ fontSize: 10, color: "#6b7280" }}>
+                      <span style={{ fontSize: 10, color: "#6e7891" }}>
                         F={Ff.toFixed(2)} ·{" "}
-                        {isSelected ? "✓ editando" : "click para editar"}
+                        {isSelected ? "✓ editando" : "clic para editar"}
                       </span>
                     </div>
                   </Tooltip>
@@ -1079,12 +1040,11 @@ export default function SimulatorView({
               addingFocus={addingFocus}
               onAdd={handleMapClick}
               foci={fociCalc}
-              disease={disease}
               theme={theme}
             />
           </MapContainer>
 
-          {/* ── Info card sobre el mapa ─────────────────────── */}
+          {/* Info card */}
           <div
             style={{
               position: "absolute",
@@ -1096,8 +1056,8 @@ export default function SimulatorView({
               borderRadius: 12,
               padding: "12px 16px",
               border: `1px solid ${level.color}30`,
-              boxShadow: "0 4px 20px rgba(15,23,42,0.12)",
-              minWidth: 170,
+              boxShadow: "var(--shadow-md)",
+              minWidth: 160,
             }}
           >
             <div
@@ -1114,7 +1074,7 @@ export default function SimulatorView({
             <div
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: 28,
+                fontSize: 26,
                 fontWeight: 700,
                 color: level.color,
                 lineHeight: 1,
@@ -1132,14 +1092,12 @@ export default function SimulatorView({
             >
               {level.label}
             </div>
-
-            {/* Barra de riesgo */}
             <div
               style={{
                 marginTop: 10,
-                height: 4,
+                height: 3,
                 background: N.border,
-                borderRadius: 4,
+                borderRadius: 3,
               }}
             >
               <div
@@ -1147,14 +1105,14 @@ export default function SimulatorView({
                   height: "100%",
                   width: `${Math.min((currentGt ?? 0) * 100, 100)}%`,
                   background: level.color,
-                  borderRadius: 4,
+                  borderRadius: 3,
                   transition: "width 0.4s",
                 }}
               />
             </div>
           </div>
 
-          {/* ── Stats rápidas (solo con stats disponibles) ──── */}
+          {/* Stats rápidas */}
           {stats && (
             <div
               style={{
@@ -1167,14 +1125,14 @@ export default function SimulatorView({
                 borderRadius: 10,
                 padding: "10px 14px",
                 border: `1px solid ${N.border}`,
-                boxShadow: "0 2px 12px rgba(15,23,42,0.08)",
+                boxShadow: "var(--shadow-sm)",
                 fontSize: 11,
                 fontFamily: "var(--font-mono)",
               }}
             >
               <div
                 style={{
-                  color: N.muted,
+                  color: N.faint,
                   fontSize: 9,
                   letterSpacing: 1,
                   marginBottom: 6,
@@ -1186,7 +1144,7 @@ export default function SimulatorView({
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
-                  gap: "4px 16px",
+                  gap: "4px 14px",
                 }}
               >
                 <span style={{ color: N.muted }}>R máx</span>
@@ -1198,14 +1156,14 @@ export default function SimulatorView({
                   {stats.rAvg?.toFixed(4)}
                 </span>
                 <span style={{ color: N.muted }}>|∇R| prom</span>
-                <span style={{ color: N.cyan, fontWeight: 600 }}>
+                <span style={{ color: N.teal, fontWeight: 600 }}>
                   {stats.gradAvg?.toFixed(4)}
                 </span>
               </div>
             </div>
           )}
 
-          {/* ── Botón agregar foco ─────────────────────────── */}
+          {/* Botón agregar zona */}
           <button
             onClick={() => {
               setAddingFocus(!addingFocus);
@@ -1228,22 +1186,21 @@ export default function SimulatorView({
               cursor: "pointer",
               backdropFilter: "blur(8px)",
               boxShadow: addingFocus
-                ? "0 4px 16px rgba(37,99,235,0.35)"
-                : "0 2px 8px rgba(15,23,42,0.1)",
-              letterSpacing: 0.5,
-              transition: "all 0.14s",
+                ? "0 4px 14px rgba(29,78,216,0.35)"
+                : "0 2px 8px rgba(13,17,23,0.1)",
+              transition: "all 0.12s",
             }}
           >
             {addingFocus
-              ? "📍 Haz click en el mapa"
-              : "+ Agregar foco hipotético"}
+              ? "📍 Haz clic en el mapa"
+              : "+ Agregar zona hipotética"}
           </button>
         </div>
 
-        {/* ── Panel lateral ─────────────────────────────────────────────── */}
+        {/* ── Panel lateral ──────────────────────────────────────────────────── */}
         <div
           style={{
-            width: 296,
+            width: 290,
             background: N.surface,
             borderLeft: `1px solid ${N.border}`,
             display: "flex",
@@ -1252,7 +1209,7 @@ export default function SimulatorView({
             overflow: "hidden",
           }}
         >
-          {/* F compuesto badge */}
+          {/* Multiplicador F */}
           {!calcMode && (
             <div
               style={{
@@ -1264,35 +1221,37 @@ export default function SimulatorView({
                 justifyContent: "space-between",
               }}
             >
-              <span style={{ fontSize: 11, color: N.muted }}>
-                Factor ambiental F
-              </span>
+              <div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: N.faint,
+                    fontFamily: "var(--font-mono)",
+                    letterSpacing: 1,
+                  }}
+                >
+                  MULTIPLICADOR AMBIENTAL
+                </div>
+                <div style={{ fontSize: 11, color: N.muted, marginTop: 1 }}>
+                  {Fcompuesto > 1.15
+                    ? "↑ Condiciones amplifican el riesgo"
+                    : "↓ Condiciones reducen el riesgo"}
+                </div>
+              </div>
               <span
                 style={{
                   fontFamily: "var(--font-mono)",
-                  fontSize: 13,
+                  fontSize: 16,
                   fontWeight: 700,
                   color:
                     Fcompuesto > 1.3
-                      ? N.red
+                      ? N.rose
                       : Fcompuesto > 1.1
-                        ? N.orange
+                        ? N.amber
                         : N.green,
                 }}
               >
-                {Fcompuesto.toFixed(3)}
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 400,
-                    color: N.muted,
-                    marginLeft: 4,
-                  }}
-                >
-                  {Fcompuesto > 1.15
-                    ? "↑ aumenta el riesgo"
-                    : "↓ reduce el riesgo"}
-                </span>
+                ×{Fcompuesto.toFixed(3)}
               </span>
             </div>
           )}
@@ -1317,14 +1276,14 @@ export default function SimulatorView({
                     border: "none",
                     cursor: "pointer",
                     background: "transparent",
-                    color: active ? N.blue : N.muted,
+                    color: active ? N.teal : N.muted,
                     fontFamily: "var(--font-body)",
                     fontSize: 12,
                     fontWeight: active ? 600 : 400,
                     borderBottom: active
-                      ? `2px solid ${N.blue}`
+                      ? `2px solid ${N.teal}`
                       : "2px solid transparent",
-                    transition: "all 0.14s",
+                    transition: "all 0.12s",
                   }}
                 >
                   {t.label}
@@ -1334,7 +1293,7 @@ export default function SimulatorView({
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: "16px 14px" }}>
-            {/* ── TAB FACTORES ──────────────────────────────── */}
+            {/* ── Factores ── */}
             {activeTab === "factores" && (
               <div className="fade-in">
                 {focoSeleccionado !== null && (
@@ -1352,8 +1311,8 @@ export default function SimulatorView({
                   >
                     <div
                       style={{
-                        width: 8,
-                        height: 8,
+                        width: 7,
+                        height: 7,
                         borderRadius: "50%",
                         background: N.blue,
                         flexShrink: 0,
@@ -1383,23 +1342,19 @@ export default function SimulatorView({
                     </button>
                   </div>
                 )}
-
                 <FactoresPanel
-                  disease={disease}
                   factores={factoresActivos}
                   onChange={setFactoresActivos}
                   theme={theme}
                   showCasos={focoSeleccionado !== null}
                 />
-
-                {/* Stats de R en tiempo real */}
                 {stats && (
                   <div style={{ marginTop: 8 }}>
                     <SectionLabel icon="📊">Valores calculados</SectionLabel>
                     <StatRow
-                      label="Riesgo máximo"
+                      label="Riesgo máximo en el mapa"
                       value={stats.rMax?.toFixed(4)}
-                      color={N.red}
+                      color={N.rose}
                     />
                     <StatRow
                       label="Riesgo promedio"
@@ -1409,7 +1364,7 @@ export default function SimulatorView({
                     <StatRow
                       label="Velocidad de expansión"
                       value={stats.gradAvg?.toFixed(4)}
-                      color={N.cyan}
+                      color={N.teal}
                     />
                     <StatRow
                       label="Epicentro (lat)"
@@ -1426,7 +1381,7 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── TAB FOCOS ─────────────────────────────────── */}
+            {/* ── Focos ── */}
             {activeTab === "focos" && (
               <div className="fade-in">
                 {focos.length === 0 ? (
@@ -1441,10 +1396,10 @@ export default function SimulatorView({
                     <div
                       style={{ fontSize: 13, color: N.muted, marginBottom: 6 }}
                     >
-                      No hay focos hipotéticos
+                      Sin zonas hipotéticas
                     </div>
                     <div style={{ fontSize: 11, color: N.faint }}>
-                      Usa el botón "Agregar foco" para simular brotes en zonas
+                      Usa el botón de abajo para simular brotes en zonas
                       específicas
                     </div>
                   </div>
@@ -1465,7 +1420,7 @@ export default function SimulatorView({
                           background: isSelected ? "#eff6ff" : N.surface2,
                           border: `1px solid ${isSelected ? N.blue + "60" : N.border}`,
                           cursor: "pointer",
-                          transition: "all 0.14s",
+                          transition: "all 0.12s",
                         }}
                       >
                         <div
@@ -1497,7 +1452,7 @@ export default function SimulatorView({
                             style={{
                               background: "none",
                               border: "none",
-                              color: N.red,
+                              color: N.rose,
                               cursor: "pointer",
                               fontSize: 18,
                               padding: 0,
@@ -1524,11 +1479,14 @@ export default function SimulatorView({
                             marginTop: 4,
                           }}
                         >
-                          <span>{f.factores.casos} casos reportados</span>
+                          <span>
+                            {f.factores.casos} casos · F=
+                            {calcularF(f.factores).toFixed(2)}
+                          </span>
                           <span
                             style={{ color: isSelected ? N.blue : N.faint }}
                           >
-                            {isSelected ? "✓ editando" : "→ click para editar"}
+                            {isSelected ? "✓ editando" : "→ clic para editar"}
                           </span>
                         </div>
                       </div>
@@ -1538,34 +1496,34 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── TAB CAPAS ─────────────────────────────────── */}
+            {/* ── Capas ── */}
             {activeTab === "capas" && (
               <div className="fade-in">
-                <SectionLabel>Visualización de capas</SectionLabel>
+                <SectionLabel>Capas del mapa</SectionLabel>
                 {[
                   {
                     key: "heatmap",
                     label: "Mapa de calor R(x,y)",
-                    desc: "Muestra dónde hay mayor riesgo",
+                    desc: "Dónde hay mayor riesgo",
                     color: theme.primary,
                   },
                   {
                     key: "gradient",
-                    label: "Campo gradiente ∇R",
-                    desc: "Hacia dónde se expande el brote",
-                    color: N.cyan,
+                    label: "Flechas de expansión ∇R",
+                    desc: "Hacia dónde se propaga el brote",
+                    color: N.teal,
                   },
                   {
                     key: "contours",
-                    label: "Curvas de nivel",
-                    desc: "Líneas de igual nivel de riesgo",
+                    label: "Zonas de igual riesgo",
+                    desc: "Líneas que separan niveles de riesgo",
                     color: N.lila,
                   },
                   {
                     key: "critical",
-                    label: "Puntos críticos",
-                    desc: "Detecta epicentros del brote",
-                    color: N.orange,
+                    label: "Epicentros del brote",
+                    desc: "Puntos donde el riesgo es máximo",
+                    color: N.amber,
                   },
                 ].map(({ key, label, desc, color }) => (
                   <div
@@ -1586,7 +1544,6 @@ export default function SimulatorView({
                       </div>
                       <div style={{ fontSize: 11, color: N.muted }}>{desc}</div>
                     </div>
-                    {/* Toggle switch */}
                     <div
                       onClick={() => toggleLayer(key)}
                       style={{
@@ -1619,20 +1576,20 @@ export default function SimulatorView({
               </div>
             )}
 
-            {/* ── TAB FÓRMULAS ──────────────────────────────── */}
+            {/* ── Fórmulas ── */}
             {activeTab === "math" && (
               <div className="fade-in">
-                <SectionLabel>Modelo matemático</SectionLabel>
-                {MATH_FORMULAS[disease].map((f, i) => (
+                <SectionLabel>Base matemática del modelo</SectionLabel>
+                {MATH_FORMULAS["dengue"].map((f, i) => (
                   <MathCard key={i} {...f} />
                 ))}
               </div>
             )}
 
-            {/* ── TAB CRÍTICOS ──────────────────────────────── */}
+            {/* ── Epicentros ── */}
             {activeTab === "criticos" && (
               <div className="fade-in">
-                <SectionLabel>Epicentros y zonas de transición</SectionLabel>
+                <SectionLabel>Epicentros detectados</SectionLabel>
                 {criticals.length === 0 ? (
                   <div
                     style={{
@@ -1643,7 +1600,7 @@ export default function SimulatorView({
                       lineHeight: 1.8,
                     }}
                   >
-                    Activa "Puntos críticos" en Capas
+                    Activa "Epicentros del brote" en Capas
                     <br />
                     para calcularlos
                   </div>
@@ -1651,10 +1608,10 @@ export default function SimulatorView({
                   criticals.map((c, i) => {
                     const col =
                       c.type === "máximo"
-                        ? N.red
+                        ? N.rose
                         : c.type === "mínimo"
                           ? N.green
-                          : N.orange;
+                          : N.amber;
                     return (
                       <div
                         key={i}
@@ -1681,7 +1638,7 @@ export default function SimulatorView({
                               color: col,
                             }}
                           >
-                            {c.type}
+                            {c.type === "máximo" ? "Epicentro" : c.type}
                           </span>
                           <span
                             style={{
@@ -1703,9 +1660,7 @@ export default function SimulatorView({
                         >
                           {c.lat.toFixed(5)}, {c.lon.toFixed(5)}
                           <br />
-                          D={c.D?.toFixed(5)}
-                          <br />
-                          Rxx={c.Rxx?.toFixed(5)}
+                          D={c.D?.toFixed(5)}&nbsp;&nbsp;Rxx={c.Rxx?.toFixed(5)}
                         </div>
                       </div>
                     );
@@ -1716,6 +1671,15 @@ export default function SimulatorView({
           </div>
         </div>
       </div>
+
+      {/* Modal */}
+      {mostrarModal && (
+        <AgregarRegistroModal
+          onGuardar={onAgregarRegistro}
+          onCerrar={() => setMostrarModal(false)}
+          datosExistentes={datos}
+        />
+      )}
     </div>
   );
 }

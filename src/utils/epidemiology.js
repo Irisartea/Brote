@@ -5,12 +5,9 @@
 import { DENGUE_RAW, getClima } from "../data/dengueData";
 import { ZONAS_SCZ, POBLACION_TOTAL } from "../data/desidadPoblacional";
 
-// Re-exportar ZONAS_SCZ para que el resto del código lo siga importando
-// desde epidemiology.js sin cambiar nada
 export { ZONAS_SCZ };
 export const POBLACION_SCZ = POBLACION_TOTAL;
 
-// ─── Normalización min-max ───────────────────
 function minmax(arr) {
   const mn = Math.min(...arr);
   const mx = Math.max(...arr);
@@ -41,24 +38,15 @@ function linreg(xs, ys) {
   return { slope, intercept, r2 };
 }
 
-// ─── Regresión polinómica de grado n ────────────────────────────────
-// Resuelve por mínimos cuadrados con eliminación gaussiana.
-// USO correcto:
-//   Temperatura vs casos → polyreg(temps, casos, 2)  [cuadrática, pico ~28°C]
-//   Lluvia vs casos      → polyreg(lluvias, casos, 2) [gaussiana aproximada]
-//   Humedad vs casos     → polyreg(humedades, casos, 1) [lineal en 50-90%]
-//   Serie temporal Gₜ   → polyreg(indices, Gts, 3)   [captura estacionalidad]
 export function polyreg(xs, ys, degree = 2) {
   const n = xs.length;
   const d = degree + 1;
-
   const A = [];
   for (let i = 0; i < n; i++) {
     const row = [];
     for (let j = 0; j < d; j++) row.push(Math.pow(xs[i], j));
     A.push(row);
   }
-
   const ATA = Array.from({ length: d }, () => Array(d).fill(0));
   const ATb = Array(d).fill(0);
   for (let i = 0; i < n; i++) {
@@ -67,7 +55,6 @@ export function polyreg(xs, ys, degree = 2) {
       for (let k = 0; k < d; k++) ATA[j][k] += A[i][j] * A[i][k];
     }
   }
-
   const aug = ATA.map((row, i) => [...row, ATb[i]]);
   for (let col = 0; col < d; col++) {
     let maxRow = col;
@@ -85,18 +72,14 @@ export function polyreg(xs, ys, degree = 2) {
   const coefs = aug.map((row, i) =>
     Math.abs(aug[i][i]) < 1e-12 ? 0 : row[d] / aug[i][i],
   );
-
   const predict = (x) => coefs.reduce((s, c, i) => s + c * Math.pow(x, i), 0);
-
   const yMean = ys.reduce((a, b) => a + b, 0) / n;
   const ssTot = ys.reduce((s, y) => s + (y - yMean) ** 2, 0);
   const ssRes = ys.reduce((s, y, i) => s + (y - predict(xs[i])) ** 2, 0);
   const r2 = ssTot === 0 ? 1 : Math.max(0, 1 - ssRes / ssTot);
-
   return { coefs, predict, r2, degree };
 }
 
-// ─── Media móvil ─────────────────────────────────────────────────────
 export function movingAverage(ys, window = 4) {
   return ys.map((_, i) => {
     const start = Math.max(0, i - Math.floor(window / 2));
@@ -106,9 +89,10 @@ export function movingAverage(ys, window = 4) {
   });
 }
 
-// ─── Procesar todos los datos ────────────────
-export function procesarDatos() {
-  const rows = DENGUE_RAW.map((r, i) => {
+// Acepta un array de datos opcional; si no se pasa, usa DENGUE_RAW
+export function procesarDatos(rawData) {
+  const source = rawData ?? DENGUE_RAW;
+  const rows = source.map((r, i) => {
     const clima = getClima(r.se, r.año);
     const incidencia = (r.confirmados / POBLACION_SCZ) * 100000;
     const severidad = r.confirmados > 0 ? r.grave / r.confirmados : 0;
@@ -138,7 +122,6 @@ export function procesarDatos() {
   return rows;
 }
 
-// ─── Calcular intensidad por zona (A_i) ──────
 export function calcularIntensidades(Gt) {
   return ZONAS_SCZ.map((zona) => {
     const Ai = Gt * zona.pi * zona.sqrtDi;
@@ -146,7 +129,6 @@ export function calcularIntensidades(Gt) {
   });
 }
 
-// ─── Estadísticas descriptivas ───────────────
 export function estadisticasDescriptivas(datos) {
   const vars = {
     confirmados: datos.map((r) => r.confirmados),
@@ -155,7 +137,6 @@ export function estadisticasDescriptivas(datos) {
     fallecidos: datos.map((r) => r.fallecidos),
     Gt: datos.map((r) => r.Gt),
   };
-
   const stats = {};
   for (const [k, arr] of Object.entries(vars)) {
     const n = arr.length;
@@ -180,7 +161,6 @@ export function estadisticasDescriptivas(datos) {
   return stats;
 }
 
-// ─── Correlaciones con clima (lineal — referencia) ───────────────────
 export function calcularCorrelaciones(datos) {
   const confirmados = datos.map((r) => r.confirmados);
   const rTemp = pearson(
@@ -206,7 +186,6 @@ export function calcularCorrelaciones(datos) {
   return { rTemp, rHum, rLluv, regTemp, regHum };
 }
 
-// ─── Correlaciones mejoradas (polinómica) ────────────────────────────
 export function calcularCorrelacionesMejoradas(datos) {
   const confirmados = datos.map((r) => r.confirmados);
   const regTemp = polyreg(
@@ -245,7 +224,6 @@ export function calcularCorrelacionesMejoradas(datos) {
   };
 }
 
-// ─── Resumen anual ────────────────────────────
 export function resumenAnual(datos) {
   const años = [...new Set(datos.map((r) => r.año))];
   return años.map((año) => {
